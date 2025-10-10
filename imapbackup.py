@@ -369,6 +369,7 @@ def encrypt_file_gpg(input_file, recipient):
             '--batch',
             '--yes',
             '--trust-model', 'always',
+            '--no-auto-key-retrieve',  # Prevent GPG from trying to fetch keys during encryption
             '--encrypt',
             '--recipient', recipient,
             '--output', output_file,
