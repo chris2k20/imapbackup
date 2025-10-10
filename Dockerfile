@@ -30,8 +30,8 @@ RUN useradd -r -u 10001 -m app \
 
 # Copy ONLY the requested script
 WORKDIR /app
-COPY imapbackup38.py /app/imapbackup38.py
-RUN chmod +x /app/imapbackup38.py
+COPY imapbackup.py /app/imapbackup.py
+RUN chmod +x /app/imapbackup.py
 
 USER app
 
@@ -41,10 +41,10 @@ VOLUME ["/data"]
 
 # OCI labels
 LABEL org.opencontainers.image.title="imapbackup" \
-      org.opencontainers.image.description="IMAP incremental backup tool packaged as a container. Runs imapbackup38.py only." \
+      org.opencontainers.image.description="IMAP incremental backup tool packaged as a container" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.source="https://github.com/${GITHUB_REPOSITORY}" \
       org.opencontainers.image.revision="${GIT_SHA}"
 
 # Use tini as entrypoint and forward args to the script
-ENTRYPOINT ["tini","--","/app/imapbackup38.py"]
+ENTRYPOINT ["tini","--","/app/imapbackup.py"]

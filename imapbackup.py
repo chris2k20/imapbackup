@@ -1,12 +1,13 @@
-#!/usr/bin/env python -u
+#!/usr/bin/env python3 -u
 
 """IMAP Incremental Backup Script"""
 __version__ = "1.4h"
 __author__ = "Rui Carmo (http://taoofmac.com)"
 __copyright__ = "(C) 2006-2018 Rui Carmo. Code under MIT License.(C)"
-__contributors__ = "jwagnerhki, Bob Ippolito, Michael Leonhard, Giuseppe Scrivano <gscrivano@gnu.org>, Ronan Sheth, Brandon Long, Christian Schanz, A. Bovett, Mark Feit"
+__contributors__ = "jwagnerhki, Bob Ippolito, Michael Leonhard, Giuseppe Scrivano <gscrivano@gnu.org>, Ronan Sheth, Brandon Long, Christian Schanz, A. Bovett, Mark Feit, Marco Machicao"
 
 # = Contributors =
+# https://github.com/mmachicao: Port impapbackup core use case to python3.8. Mailbox does not support compression.
 # http://github.com/markfeit: Allow password to be read from a file
 # http://github.com/jwagnerhki: fix for message_id checks
 # A. Bovett: Modifications for Thunderbird compatibility and disabling spinner in Windows
@@ -26,7 +27,6 @@ __contributors__ = "jwagnerhki, Bob Ippolito, Michael Leonhard, Giuseppe Scrivan
 # - Use the email module to normalize downloaded messages
 #   and add missing Message-Id
 # - Test parseList() and its descendents on other imapds
-# - Test bzip2 support
 # - Add option to download only subscribed folders
 # - Add regex option to filter folders
 # - Use a single IMAP command to get Message-IDs
@@ -48,16 +48,14 @@ import os
 import gc
 import sys
 import time
-import platform
 import getopt
 import mailbox
 import imaplib
 import socket
 import re
 import hashlib
-import gzip
-import bz2
-
+import subprocess
+import tempfile
 
 class SkipFolderException(Exception):
     """Indicates aborting processing of current folder, continue with next folder."""
@@ -109,7 +107,7 @@ def pretty_byte_count(num):
 
 
 # Regular expressions for parsing
-MSGID_RE = re.compile("^Message\-Id\: (.+)", re.IGNORECASE + re.MULTILINE)
+MSGID_RE = re.compile(r"^Message-Id: (.+)", re.IGNORECASE + re.MULTILINE)
 BLANKS_RE = re.compile(r'\s+', re.MULTILINE)
 
 # Constants
@@ -124,8 +122,7 @@ def string_from_file(value):
     will be treated as a path to the file to be read.  Precede
     the '@' with a '\' to treat it as a literal.
     """
-
-    assert isinstance(value, basestring)
+    assert isinstance(value, str)
 
     if not value or value[0] not in ["\\", "@"]:
         return value
@@ -137,37 +134,361 @@ def string_from_file(value):
         return content.read().strip()
 
 
-def download_messages(server, filename, messages, config):
+def import_gpg_key(source):
+    """
+    Import a GPG public key from various sources.
+
+    Supports:
+    - Environment variable: GPG_PUBLIC_KEY
+    - File path: /path/to/key.asc or ~/keys/public.asc
+    - URL: https://example.com/public-key.asc
+    - Raw key content as string
+
+    Args:
+        source: String containing env var name, file path, URL, or key content
+
+    Returns:
+        True if import succeeded, False otherwise
+    """
+    try:
+        key_content = None
+        source_description = ""
+
+        # Check if GPG is available
+        try:
+            subprocess.run(['gpg', '--version'], capture_output=True, check=True)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            raise Exception("GPG not found. Please install GPG (gnupg) to use key import.")
+
+        # 1. Check environment variable
+        if source.startswith('env:') or source.startswith('ENV:'):
+            env_var = source[4:]
+            key_content = os.environ.get(env_var)
+            if not key_content:
+                raise Exception("Environment variable '%s' not found or empty" % env_var)
+            source_description = "environment variable %s" % env_var
+
+        # 2. Check if it's a URL (http:// or https://)
+        elif source.startswith('http://') or source.startswith('https://'):
+            try:
+                # Use subprocess to call curl or wget
+                # Try curl first
+                try:
+                    result = subprocess.run(
+                        ['curl', '-fsSL', source],
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                        timeout=30
+                    )
+                    key_content = result.stdout
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    # Fall back to wget
+                    result = subprocess.run(
+                        ['wget', '-qO-', source],
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                        timeout=30
+                    )
+                    key_content = result.stdout
+
+                if not key_content or len(key_content) < 100:
+                    raise Exception("Downloaded key appears to be empty or invalid")
+                source_description = "URL %s" % source
+            except subprocess.TimeoutExpired:
+                raise Exception("Timeout while downloading key from %s" % source)
+            except Exception as e:
+                raise Exception("Failed to download key from URL: %s" % str(e))
+
+        # 3. Check if it's a file path
+        elif os.path.exists(os.path.expanduser(source)):
+            file_path = os.path.expanduser(source)
+            with open(file_path, 'r') as f:
+                key_content = f.read()
+            source_description = "file %s" % file_path
+
+        # 4. Assume it's raw key content
+        else:
+            # Check if it looks like a GPG key
+            if '-----BEGIN PGP PUBLIC KEY BLOCK-----' in source:
+                key_content = source
+                source_description = "provided key content"
+            else:
+                raise Exception("Invalid key source: not a valid file, URL, environment variable, or key content")
+
+        # Validate key content
+        if not key_content:
+            raise Exception("No key content found")
+
+        if '-----BEGIN PGP PUBLIC KEY BLOCK-----' not in key_content:
+            raise Exception("Invalid GPG key format (missing PGP PUBLIC KEY BLOCK header)")
+
+        # Import the key using GPG
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.asc') as f:
+            f.write(key_content)
+            temp_key_file = f.name
+
+        try:
+            cmd = ['gpg', '--batch', '--import', temp_key_file]
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+
+            print("  Successfully imported GPG key from %s" % source_description)
+
+            # Show imported key info if available in stderr
+            if result.stderr:
+                # GPG outputs import info to stderr
+                for line in result.stderr.split('\n'):
+                    if 'imported:' in line.lower() or 'public key' in line.lower():
+                        print("  %s" % line.strip())
+
+            return True
+
+        finally:
+            # Clean up temp file
+            if os.path.exists(temp_key_file):
+                os.unlink(temp_key_file)
+
+    except Exception as e:
+        print("  WARNING: Failed to import GPG key: %s" % str(e))
+        return False
+
+
+def encrypt_file_gpg(input_file, recipient):
+    """Encrypt a file using GPG and return the path to encrypted file"""
+    output_file = input_file + '.gpg'
+
+    try:
+        # Run GPG encryption
+        cmd = [
+            'gpg',
+            '--batch',
+            '--yes',
+            '--trust-model', 'always',
+            '--encrypt',
+            '--recipient', recipient,
+            '--output', output_file,
+            input_file
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+
+        if os.path.exists(output_file):
+            print ("  Encrypted with GPG for recipient: %s" % recipient)
+            return output_file
+        else:
+            raise Exception("GPG encryption failed: output file not created")
+
+    except subprocess.CalledProcessError as e:
+        raise Exception("GPG encryption failed: %s\n%s" % (e.stderr, e.stdout))
+    except FileNotFoundError:
+        raise Exception("GPG not found. Please install GPG (gnupg) to use encryption.")
+
+
+def decrypt_file_gpg(input_file):
+    """Decrypt a GPG-encrypted file and return the path to decrypted file"""
+    # Remove .gpg extension for output file
+    if input_file.endswith('.gpg'):
+        output_file = input_file[:-4]
+    else:
+        output_file = input_file + '.decrypted'
+
+    try:
+        # Run GPG decryption
+        cmd = [
+            'gpg',
+            '--batch',
+            '--yes',
+            '--decrypt',
+            '--output', output_file,
+            input_file
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+
+        if os.path.exists(output_file):
+            print ("  Decrypted: %s" % os.path.basename(input_file))
+            return output_file
+        else:
+            raise Exception("GPG decryption failed: output file not created")
+
+    except subprocess.CalledProcessError as e:
+        raise Exception("GPG decryption failed: %s\n%s" % (e.stderr, e.stdout))
+    except FileNotFoundError:
+        raise Exception("GPG not found. Please install GPG (gnupg) to use decryption.")
+
+
+def download_from_s3(filename, config, destination_dir):
+    """Download a file from S3-compatible storage using AWS CLI"""
+    try:
+        # Check if aws CLI is available
+        try:
+            subprocess.run(['aws', '--version'], capture_output=True, check=True)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            raise Exception("AWS CLI not found. Please install awscli to use S3 download.")
+
+        # Prepare S3 object key
+        s3_prefix = config.get('s3_prefix', '').rstrip('/')
+        if s3_prefix:
+            s3_key = s3_prefix + '/' + filename
+        else:
+            s3_key = filename
+
+        s3_uri = 's3://%s/%s' % (config['s3_bucket'], s3_key)
+
+        # Destination path
+        destination_path = os.path.join(destination_dir, filename)
+
+        # Set up environment variables for AWS credentials
+        env = os.environ.copy()
+        env['AWS_ACCESS_KEY_ID'] = config['s3_access_key']
+        env['AWS_SECRET_ACCESS_KEY'] = config['s3_secret_key']
+
+        # Build AWS CLI command
+        cmd = [
+            'aws', 's3', 'cp',
+            s3_uri,
+            destination_path,
+            '--endpoint-url', config['s3_endpoint']
+        ]
+
+        print ("  Downloading from S3: %s" % s3_uri)
+
+        result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=True)
+
+        print ("  Download complete")
+        return destination_path
+
+    except subprocess.CalledProcessError as e:
+        raise Exception("S3 download failed: %s\n%s" % (e.stderr, e.stdout))
+
+
+def upload_to_s3(file_path, config):
+    """Upload a file to S3-compatible storage using AWS CLI"""
+    try:
+        # Check if aws CLI is available
+        try:
+            subprocess.run(['aws', '--version'], capture_output=True, check=True)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            raise Exception("AWS CLI not found. Please install awscli to use S3 upload.")
+
+        # Prepare S3 object key
+        filename = os.path.basename(file_path)
+        s3_prefix = config.get('s3_prefix', '').rstrip('/')
+        if s3_prefix:
+            s3_key = s3_prefix + '/' + filename
+        else:
+            s3_key = filename
+
+        s3_uri = 's3://%s/%s' % (config['s3_bucket'], s3_key)
+
+        # Set up environment variables for AWS credentials
+        env = os.environ.copy()
+        env['AWS_ACCESS_KEY_ID'] = config['s3_access_key']
+        env['AWS_SECRET_ACCESS_KEY'] = config['s3_secret_key']
+
+        # Build AWS CLI command
+        cmd = [
+            'aws', 's3', 'cp',
+            file_path,
+            s3_uri,
+            '--endpoint-url', config['s3_endpoint']
+        ]
+
+        print ("  Uploading to S3: %s" % s3_uri)
+
+        result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=True)
+
+        print ("  Upload complete")
+        return True
+
+    except subprocess.CalledProcessError as e:
+        raise Exception("S3 upload failed: %s\n%s" % (e.stderr, e.stdout))
+
+
+def upload_messages(server, foldername, filename, messages_to_upload, nospinner, basedir):
+    """Upload messages from mbox file to IMAP folder"""
+
+    fullname = os.path.join(basedir, filename)
+
+    # Check if file exists
+    if not os.path.exists(fullname):
+        print ("File %s: not found, skipping" % filename)
+        return
+
+    # nothing to do
+    if not len(messages_to_upload):
+        print ("Messages to upload: 0")
+        return
+
+    spinner = Spinner("Uploading %s messages to %s" % (len(messages_to_upload), foldername),
+                      nospinner)
+
+    # Open the mbox file
+    mbox = mailbox.mbox(fullname)
+
+    uploaded = 0
+    total_size = 0
+
+    # Iterate through messages in the mbox file
+    for message in mbox:
+        # Get the Message-Id
+        msg_id = message.get('Message-Id', '').strip()
+
+        # Check if this message needs to be uploaded
+        if msg_id in messages_to_upload:
+            # Convert message to string (bytes)
+            msg_bytes = bytes(str(message), 'utf-8')
+
+            # Upload to IMAP server
+            # Use APPEND command to add message to folder
+            try:
+                # Select the folder for append (need to ensure it exists)
+                foldername_quoted = '"{}"'.format(foldername)
+
+                # APPEND the message
+                result = server.append(foldername_quoted, None, None, msg_bytes)
+
+                if result[0] == 'OK':
+                    uploaded += 1
+                    total_size += len(msg_bytes)
+                else:
+                    print ("\nWarning: Failed to upload message with ID: %s" % msg_id)
+
+            except Exception as e:
+                print ("\nError uploading message %s: %s" % (msg_id, str(e)))
+
+            spinner.spin()
+
+    mbox.close()
+    spinner.stop()
+    print (": %s uploaded, %s total" % (uploaded, pretty_byte_count(total_size)))
+
+
+def download_messages(server, filename, messages, overwrite, nospinner, thunderbird, basedir, icloud):
     """Download messages from folder and append to mailbox"""
 
-    if config['overwrite']:
-        if os.path.exists(filename):
-            print "Deleting", filename
-            os.remove(filename)
-        return []
-    else:
-        assert('bzip2' != config['compress'])
+    fullname = os.path.join(basedir,filename)
 
-    # Open disk file
-    if config['compress'] == 'gzip':
-        mbox = gzip.GzipFile(filename, 'ab', 9)
-    elif config['compress'] == 'bzip2':
-        mbox = bz2.BZ2File(filename, 'wb', 512*1024, 9)
-    else:
-        mbox = file(filename, 'ab')
+    if overwrite and os.path.exists(fullname):
+        print ("Deleting mbox: {0} at: {1}".format(filename,fullname))
+        os.remove(fullname)
+    
+    # Open disk file for append in binary mode
+    mbox = open(fullname, 'ab')
 
     # the folder has already been selected by scanFolder()
 
     # nothing to do
     if not len(messages):
-        print "New messages: 0"
+        print ("New messages: 0")
         mbox.close()
         return
 
     spinner = Spinner("Downloading %s new messages to %s" % (len(messages), filename),
-                      config['nospinner'])
+                      nospinner)
     total = biggest = 0
-    from_re = re.compile("\n(>*)From ")
+    from_re = re.compile(b"\n(>*)From ")
 
     # each new message
     for msg_id in messages.keys():
@@ -181,25 +502,33 @@ def download_messages(server, filename, messages, config):
         # the other headers
         if UUID in msg_id:
             buf = buf + "Message-Id: %s\n" % msg_id
-        mbox.write(buf)
+
+        # convert to bytes before writing to file of type binary
+        buf_bytes=bytes(buf,'utf-8')
+        mbox.write(buf_bytes)
 
         # fetch message
-        typ, data = server.fetch(messages[msg_id], "RFC822")
+        msg_id_str = str(messages[msg_id])
+        typ, data = server.fetch(msg_id_str, "(BODY.PEEK[])" if icloud else "(RFC822)")
+
+
         assert('OK' == typ)
-        text = data[0][1].strip().replace('\r', '')
-        if config['thunderbird']:
+        data_bytes = data[0][1]
+
+        text_bytes = data_bytes.strip().replace(b'\r', b'')
+        if thunderbird:
             # This avoids Thunderbird mistaking a line starting "From  " as the start
             # of a new message. _Might_ also apply to other mail lients - unknown
-            text = text.replace("\nFrom ", "\n From ")
+            text_bytes = text_bytes.replace(b"\nFrom ", b"\n From ")
         else:
             # Perform >From quoting as described by RFC 4155 and the qmail docs.
             # https://www.rfc-editor.org/rfc/rfc4155.txt
             # http://qmail.org/qmail-manual-html/man5/mbox.html
-            text = from_re.sub("\n>\\1From ", text)
-        mbox.write(text)
-        mbox.write('\n\n')
+            text_bytes = from_re.sub(b"\n>\\1From ", text_bytes)
+        mbox.write(text_bytes)
+        mbox.write(b'\n\n')
 
-        size = len(text)
+        size = len(text_bytes)
         biggest = max(size, biggest)
         total += size
 
@@ -209,47 +538,43 @@ def download_messages(server, filename, messages, config):
 
     mbox.close()
     spinner.stop()
-    print ": %s total, %s for largest message" % (pretty_byte_count(total),
-                                                  pretty_byte_count(biggest))
+    print (": %s total, %s for largest message" % (pretty_byte_count(total),
+                                                  pretty_byte_count(biggest)))
 
 
-def scan_file(filename, compress, overwrite, nospinner):
+def scan_file(filename, overwrite, nospinner, basedir):
     """Gets IDs of messages in the specified mbox file"""
     # file will be overwritten
     if overwrite:
         return []
-    else:
-        assert('bzip2' != compress)
+    
+    fullname = os.path.join(basedir,filename)
 
     # file doesn't exist
-    if not os.path.exists(filename):
-        print "File %s: not found" % filename
+    if not os.path.exists(fullname):
+        print ("File %s: not found" % filename)
         return []
 
     spinner = Spinner("File %s" % filename, nospinner)
 
-    # open the file
-    if compress == 'gzip':
-        mbox = gzip.GzipFile(filename, 'rb')
-    elif compress == 'bzip2':
-        mbox = bz2.BZ2File(filename, 'rb')
-    else:
-        mbox = file(filename, 'rb')
+    # open the mailbox file for read
+    mbox = mailbox.mbox(fullname)
 
     messages = {}
 
     # each message
     i = 0
-    for message in mailbox.PortableUnixMailbox(mbox):
+    HEADER_MESSAGE_ID='Message-Id'
+    for message in mbox:
         header = ''
         # We assume all messages on disk have message-ids
         try:
-            header = ''.join(message.getfirstmatchingheader('message-id'))
+            header = "{0}: {1}".format(HEADER_MESSAGE_ID,message.get(HEADER_MESSAGE_ID))
         except KeyError:
             # No message ID was found. Warn the user and move on
             print
-            print "WARNING: Message #%d in %s" % (i, filename),
-            print "has no Message-Id header."
+            print ("WARNING: Message #%d in %s" % (i, filename),)
+            print ("has no {0} header.".format(HEADER_MESSAGE_ID))
 
         header = BLANKS_RE.sub(' ', header.strip())
         try:
@@ -261,15 +586,15 @@ def scan_file(filename, compress, overwrite, nospinner):
             # Message-Id was found but could somehow not be parsed by regexp
             # (highly bloody unlikely)
             print
-            print "WARNING: Message #%d in %s" % (i, filename),
-            print "has a malformed Message-Id header."
+            print ("WARNING: Message #%d in %s" % (i, filename),)
+            print ("has a malformed {0} header.".format(HEADER_MESSAGE_ID))
         spinner.spin()
         i = i + 1
 
     # done
     mbox.close()
     spinner.stop()
-    print ": %d messages" % (len(messages.keys()))
+    print (": %d messages" % (len(messages.keys())))
     return messages
 
 
@@ -284,15 +609,31 @@ def scan_folder(server, foldername, nospinner):
             raise SkipFolderException("SELECT failed: %s" % data)
         num_msgs = int(data[0])
 
-        # each message
-        for num in range(1, num_msgs+1):
-            # Retrieve Message-Id, making sure we don't mark all messages as read
-            typ, data = server.fetch(
-                num, '(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])')
+        # Retrieve all Message-Id headers, making sure we don't mark all messages as read.
+        #
+        # The result is an array of result tuples with a terminating closing parenthesis
+        # after each tuple. That means that the first result is at index 0, the second at
+        # 2, third at 4, and so on.
+        #
+        # e.g.
+        # [
+        #   (b'1 (BODY[...', b'Message-Id: ...'), b')', # indices 0 and 1
+        #   (b'2 (BODY[...', b'Message-Id: ...'), b')', # indices 2 and 3
+        #   ...
+        #  ]
+        if num_msgs > 0:
+            typ, data = server.fetch(f'1:{num_msgs}', '(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])')
             if 'OK' != typ:
-                raise SkipFolderException("FETCH %s failed: %s" % (num, data))
+                raise SkipFolderException("FETCH failed: %s" % (data))
 
-            header = data[0][1].strip()
+        # each message
+        for i in range(0, num_msgs):
+            num = 1 + i
+
+            # Double the index because of the terminating parenthesis after each tuple.
+            data_str = str(data[2 * i][1], 'utf-8', 'replace')
+            header = data_str.strip()
+
             # remove newlines inside Message-Id (a dumb Exchange trait)
             header = BLANKS_RE.sub(' ', header)
             try:
@@ -303,22 +644,23 @@ def scan_folder(server, foldername, nospinner):
             except (IndexError, AttributeError):
                 # Some messages may have no Message-Id, so we'll synthesise one
                 # (this usually happens with Sent, Drafts and .Mac news)
-                typ, data = server.fetch(
-                    num, '(BODY[HEADER.FIELDS (FROM TO CC DATE SUBJECT)])')
-                if 'OK' != typ:
+                msg_typ, msg_data = server.fetch(
+                    str(num), '(BODY[HEADER.FIELDS (FROM TO CC DATE SUBJECT)])')
+                if 'OK' != msg_typ:
                     raise SkipFolderException(
-                        "FETCH %s failed: %s" % (num, data))
-                header = data[0][1].strip()
-                header = header.replace('\r\n', '\t')
+                        "FETCH %s failed: %s" % (num, msg_data))
+                data_str = str(msg_data[0][1], 'utf-8', 'replace')
+                header = data_str.strip()
+                header = header.replace('\r\n', '\t').encode('utf-8')
                 messages['<' + UUID + '.' +
                          hashlib.sha1(header).hexdigest() + '>'] = num
             spinner.spin()
     finally:
         spinner.stop()
-        print ":",
+        print (":",)
 
     # done
-    print "%d messages" % (len(messages.keys()))
+    print ("%d messages" % (len(messages.keys())))
     return messages
 
 
@@ -331,7 +673,7 @@ def parse_paren_list(row):
     result = []
 
     # NOTE: RFC3501 doesn't fully define the format of name attributes
-    name_attrib_re = re.compile("^\s*(\\\\[a-zA-Z0-9_]+)\s*")
+    name_attrib_re = re.compile(r"^\s*(\\[a-zA-Z0-9_]+)\s*")
 
     # eat name attributes until ending paren
     while row[0] != ')':
@@ -345,7 +687,6 @@ def parse_paren_list(row):
             assert(match is not None)
             name_attrib = row[match.start():match.end()]
             row = row[match.end():]
-            #print "MATCHED '%s' '%s'" % (name_attrib, row)
             name_attrib = name_attrib.strip()
             result.append(name_attrib)
 
@@ -359,41 +700,23 @@ def parse_paren_list(row):
 
 def parse_string_list(row):
     """Parses the quoted and unquoted strings at the end of a LIST response"""
-    slist = re.compile('\s*(?:"([^"]+)")\s*|\s*(\S+)\s*').split(row)
+    slist = re.compile(r'\s*"([^"]+)"\s*|\s*(\S+)\s*').split(row)
     return [s for s in slist if s]
 
 
 def parse_list(row):
     """Parses response of LIST command into a list"""
     row = row.strip()
+    print(row)
     paren_list, row = parse_paren_list(row)
     string_list = parse_string_list(row)
     assert(len(string_list) == 2)
     return [paren_list] + string_list
 
 
-def get_hierarchy_delimiter(server):
-    """Queries the imapd for the hierarchy delimiter, eg. '.' in INBOX.Sent"""
-    # see RFC 3501 page 39 paragraph 4
-    typ, data = server.list('', '')
-    assert(typ == 'OK')
-    assert(len(data) == 1)
-    lst = parse_list(data[0])  # [attribs, hierarchy delimiter, root name]
-    hierarchy_delim = lst[1]
-    # NIL if there is no hierarchy
-    if 'NIL' == hierarchy_delim:
-        hierarchy_delim = '.'
-    return hierarchy_delim
-
-
-def get_names(server, compress, thunderbird, nospinner):
+def get_names(server, thunderbird, nospinner):
     """Get list of folders, returns [(FolderName,FileName)]"""
-
     spinner = Spinner("Finding Folders", nospinner)
-
-    # Get hierarchy delimiter
-    delim = get_hierarchy_delimiter(server)
-    spinner.spin()
 
     # Get LIST of all folders
     typ, data = server.list()
@@ -402,50 +725,71 @@ def get_names(server, compress, thunderbird, nospinner):
 
     names = []
 
-    # parse each LIST, find folder name
+    # parse each LIST entry for folder name hierarchy delimiter
     for row in data:
-        lst = parse_list(row)
+        row_str = str(row,'utf-8')
+        lst = parse_list(row_str) # [attribs, hierarchy delimiter, root name]
+        delim = lst[1]
         foldername = lst[2]
-        suffix = {'none': '', 'gzip': '.gz', 'bzip2': '.bz2'}[compress]
         if thunderbird:
-            filename = '.sbd/'.join(foldername.split(delim)) + suffix
+            filename = '.sbd/'.join(foldername.split(delim))
             if filename.startswith("INBOX"):
                 filename = filename.replace("INBOX", "Inbox")
         else:
-            filename = '.'.join(foldername.split(delim)) + '.mbox' + suffix
+            filename = '.'.join(foldername.split(delim)) + '.mbox'
         # print "\n*** Folder:", foldername # *DEBUG
         # print "***   File:", filename # *DEBUG
         names.append((foldername, filename))
 
     # done
     spinner.stop()
-    print ": %s folders" % (len(names))
+    print (": %s folders" % (len(names)))
     return names
 
 
 def print_usage():
     """Prints usage, exits"""
     #     "                                                                               "
-    print "Usage: imapbackup [OPTIONS] -s HOST -u USERNAME [-p PASSWORD]"
-    print " -a --append-to-mboxes     Append new messages to mbox files. (default)"
-    print " -y --yes-overwrite-mboxes Overwite existing mbox files instead of appending."
-    print " -n --compress=none        Use one plain mbox file for each folder. (default)"
-    print " -z --compress=gzip        Use mbox.gz files.  Appending may be very slow."
-    print " -b --compress=bzip2       Use mbox.bz2 files. Appending not supported: use -y."
-    print " -f --=folder              Specifify which folders use.  Comma separated list."
-    print " -e --ssl                  Use SSL.  Port defaults to 993."
-    print " -k KEY --key=KEY          PEM private key file for SSL.  Specify cert, too."
-    print " -c CERT --cert=CERT       PEM certificate chain for SSL.  Specify key, too."
-    print "                           Python's SSL module doesn't check the cert chain."
-    print " -s HOST --server=HOST     Address of server, port optional, eg. mail.com:143"
-    print " -u USER --user=USER       Username to log into server"
-    print " -p PASS --pass=PASS       Prompts for password if not specified.  If the first"
-    print "                           character is '@', treat the rest as a path to a file"
-    print "                           containing the password.  Leading '\' makes it literal."
-    print " -t SECS --timeout=SECS    Sets socket timeout to SECS seconds."
-    print " --thunderbird             Create Mozilla Thunderbird compatible mailbox"
-    print " --nospinner               Disable spinner (makes output log-friendly)"
-    print "\nNOTE: mbox files are created in the current working directory."
+    print ("Usage: imapbackup [OPTIONS] -s HOST -u USERNAME [-p PASSWORD]")
+    print (" -d DIR --mbox-dir=DIR         Write mbox files to directory. (defaults to cwd)")
+    print (" -a --append-to-mboxes         Append new messages to mbox files. (default)")
+    print (" -y --yes-overwrite-mboxes     Overwite existing mbox files instead of appending.")
+    print (" -r --restore                  Restore mode: upload mbox files to IMAP server.")
+    print ("                               Will not upload messages that already exist on server.")
+    print (" -f FOLDERS --folders=FOLDERS  Specify which folders to include. Comma separated list.")
+    print (" --exclude-folders=FOLDERS     Specify which folders to exclude. Comma separated list.")
+    print ("                               You cannot use both --folders and --exclude-folders.")
+    print (" -e --ssl                      Use SSL.  Port defaults to 993.")
+    print (" -k KEY --key=KEY              PEM private key file for SSL.  Specify cert, too.")
+    print (" -c CERT --cert=CERT           PEM certificate chain for SSL.  Specify key, too.")
+    print ("                               Python's SSL module doesn't check the cert chain.")
+    print (" -s HOST --server=HOST         Address of server, port optional, eg. mail.com:143")
+    print (" -u USER --user=USER           Username to log into server")
+    print (" -p PASS --pass=PASS           Prompts for password if not specified.  If the first")
+    print ("                               character is '@', treat the rest as a path to a file")
+    print ("                               containing the password.  Leading '\' makes it literal.")
+    print (" -t SECS --timeout=SECS        Sets socket timeout to SECS seconds.")
+    print (" --thunderbird                 Create Mozilla Thunderbird compatible mailbox")
+    print (" --nospinner                   Disable spinner (makes output log-friendly)")
+    print (" --icloud                      Enable iCloud compatibility mode (for iCloud mailserver)")
+    print ("")
+    print ("S3 Storage Options:")
+    print (" --s3-upload                   Enable S3 storage integration")
+    print ("                               Backup mode: Upload mbox files to S3 after backup")
+    print ("                               Restore mode: Download mbox files from S3 before restore")
+    print (" --s3-endpoint=URL             S3 endpoint URL (e.g., https://s3.eu-central-1.wasabisys.com)")
+    print (" --s3-bucket=BUCKET            S3 bucket name")
+    print (" --s3-access-key=KEY           S3 access key ID")
+    print (" --s3-secret-key=KEY           S3 secret access key")
+    print (" --s3-prefix=PREFIX            Optional prefix for S3 object keys (e.g., backups/imap/)")
+    print (" --gpg-encrypt                 Encrypt/decrypt files with GPG when using S3")
+    print ("                               Backup mode: Encrypts before upload")
+    print ("                               Restore mode: Decrypts after download")
+    print (" --gpg-recipient=EMAIL         GPG recipient email/key ID (required for encryption)")
+    print (" --gpg-import-key=SOURCE       Import GPG public key before encryption. SOURCE can be:")
+    print ("                               - File path: /path/to/key.asc or ~/keys/public.asc")
+    print ("                               - URL: https://example.com/public-key.asc")
+    print ("                               - Environment variable: env:GPG_PUBLIC_KEY")
     sys.exit(2)
 
 
@@ -453,17 +797,21 @@ def process_cline():
     """Uses getopt to process command line, returns (config, warnings, errors)"""
     # read command line
     try:
-        short_args = "aynzbekt:c:s:u:p:f:"
-        long_args = ["append-to-mboxes", "yes-overwrite-mboxes", "compress=",
+        short_args = "ayrnekt:c:s:u:p:f:d:"
+        long_args = ["append-to-mboxes", "yes-overwrite-mboxes", "restore",
                      "ssl", "timeout", "keyfile=", "certfile=", "server=", "user=", "pass=",
-                     "folders=", "thunderbird", "nospinner"]
+                     "folders=", "exclude-folders=", "thunderbird", "nospinner", "mbox-dir=", "icloud",
+                     "s3-upload", "s3-endpoint=", "s3-bucket=", "s3-access-key=", "s3-secret-key=",
+                     "s3-prefix=", "gpg-encrypt", "gpg-recipient=", "gpg-import-key="]
         opts, extraargs = getopt.getopt(sys.argv[1:], short_args, long_args)
     except getopt.GetoptError:
         print_usage()
 
     warnings = []
-    config = {'compress': 'none', 'overwrite': False, 'usessl': False,
-              'thunderbird': False, 'nospinner': False}
+    config = {'overwrite': False, 'usessl': False,
+              'thunderbird': False, 'nospinner': False,
+              'basedir': ".", 'icloud': False, 'restore': False,
+              's3_upload': False, 'gpg_encrypt': False}
     errors = []
 
     # empty command line
@@ -472,28 +820,23 @@ def process_cline():
 
     # process each command line option, save in config
     for option, value in opts:
-        if option in ("-a", "--append-to-mboxes"):
+        if option in ("-d", "--mbox-dir"):
+            config['basedir'] = value
+        elif option in ("-a", "--append-to-mboxes"):
             config['overwrite'] = False
         elif option in ("-y", "--yes-overwrite-mboxes"):
             warnings.append("Existing mbox files will be overwritten!")
             config["overwrite"] = True
-        elif option == "-n":
-            config['compress'] = 'none'
-        elif option == "-z":
-            config['compress'] = 'gzip'
-        elif option == "-b":
-            config['compress'] = 'bzip2'
-        elif option == "--compress":
-            if value in ('none', 'gzip', 'bzip2'):
-                config['compress'] = value
-            else:
-                errors.append("Invalid compression type specified.")
+        elif option in ("-r", "--restore"):
+            config['restore'] = True
         elif option in ("-e", "--ssl"):
             config['usessl'] = True
         elif option in ("-k", "--keyfile"):
             config['keyfilename'] = value
         elif option in ("-f", "--folders"):
             config['folders'] = value
+        elif option in ("--exclude-folders"):
+            config['exclude-folders'] = value
         elif option in ("-c", "--certfile"):
             config['certfilename'] = value
         elif option in ("-s", "--server"):
@@ -511,6 +854,26 @@ def process_cline():
             config['thunderbird'] = True
         elif option == "--nospinner":
             config['nospinner'] = True
+        elif option == "--icloud":
+            config['icloud'] = True
+        elif option == "--s3-upload":
+            config['s3_upload'] = True
+        elif option == "--s3-endpoint":
+            config['s3_endpoint'] = value
+        elif option == "--s3-bucket":
+            config['s3_bucket'] = value
+        elif option == "--s3-access-key":
+            config['s3_access_key'] = value
+        elif option == "--s3-secret-key":
+            config['s3_secret_key'] = value
+        elif option == "--s3-prefix":
+            config['s3_prefix'] = value
+        elif option == "--gpg-encrypt":
+            config['gpg_encrypt'] = True
+        elif option == "--gpg-recipient":
+            config['gpg_recipient'] = value
+        elif option == "--gpg-import-key":
+            config['gpg_import_key'] = value
         else:
             errors.append("Unknown option: " + option)
 
@@ -524,14 +887,6 @@ def process_cline():
 
 def check_config(config, warnings, errors):
     """Checks the config for consistency, returns (config, warnings, errors)"""
-
-    if config['compress'] == 'bzip2' and config['overwrite'] is False:
-        errors.append(
-            "Cannot append new messages to mbox.bz2 files.  Please specify -y.")
-    if config['compress'] == 'gzip' and config['overwrite'] is False:
-        warnings.append(
-            "Appending new messages to mbox.gz files is very slow.  Please Consider\n"
-            "  using -y and compressing the files yourself with gzip -9 *.mbox")
     if 'server' not in config:
         errors.append("No server specified.")
     if 'user' not in config:
@@ -543,6 +898,24 @@ def check_config(config, warnings, errors):
     if 'certfilename' in config and not config['usessl']:
         errors.append(
             "Certificate specified without SSL.  Please use -e or --ssl.")
+
+    # Check S3 configuration
+    if config.get('s3_upload'):
+        if 's3_endpoint' not in config:
+            errors.append("S3 upload enabled but no --s3-endpoint specified.")
+        if 's3_bucket' not in config:
+            errors.append("S3 upload enabled but no --s3-bucket specified.")
+        if 's3_access_key' not in config:
+            errors.append("S3 upload enabled but no --s3-access-key specified.")
+        if 's3_secret_key' not in config:
+            errors.append("S3 upload enabled but no --s3-secret-key specified.")
+
+    # Check GPG configuration
+    if config.get('gpg_encrypt'):
+        if not config.get('s3_upload'):
+            warnings.append("GPG encryption enabled but S3 upload is not enabled.")
+        if 'gpg_recipient' not in config:
+            errors.append("GPG encryption enabled but no --gpg-recipient specified.")
     if 'server' in config and ':' in config['server']:
         # get host and port strings
         bits = config['server'].split(':', 1)
@@ -572,7 +945,6 @@ def check_config(config, warnings, errors):
 def get_config():
     """Gets config from command line and console, returns config"""
     # config = {
-    #   'compress': 'none' or 'gzip' or 'bzip2'
     #   'overwrite': True or False
     #   'server': String
     #   'port': Integer
@@ -588,11 +960,11 @@ def get_config():
 
     # show warnings
     for warning in warnings:
-        print "WARNING:", warning
+        print ("WARNING:", warning)
 
     # show errors, exit
     for error in errors:
-        print "ERROR", error
+        print ("ERROR", error)
     if len(errors):
         sys.exit(2)
 
@@ -621,56 +993,70 @@ def connect_and_login(config):
             socket.setdefaulttimeout(config['timeout'])
 
         if config['usessl'] and 'keyfilename' in config:
-            print "Connecting to '%s' TCP port %d," % (
-                config['server'], config['port']),
-            print "SSL, key from %s," % (config['keyfilename']),
-            print "cert from %s " % (config['certfilename'])
+            print ("Connecting to '%s' TCP port %d," % (
+                config['server'], config['port']),)
+            print ("SSL, key from %s," % (config['keyfilename']),)
+            print ("cert from %s " % (config['certfilename']))
             server = imaplib.IMAP4_SSL(config['server'], config['port'],
                                        config['keyfilename'], config['certfilename'])
         elif config['usessl']:
-            print "Connecting to '%s' TCP port %d, SSL" % (
-                config['server'], config['port'])
+            print ("Connecting to '%s' TCP port %d, SSL" % (
+                config['server'], config['port']))
             server = imaplib.IMAP4_SSL(config['server'], config['port'])
         else:
-            print "Connecting to '%s' TCP port %d" % (
-                config['server'], config['port'])
+            print ("Connecting to '%s' TCP port %d" % (
+                config['server'], config['port']))
             server = imaplib.IMAP4(config['server'], config['port'])
 
         # speed up interactions on TCP connections using small packets
         server.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
-        print "Logging in as '%s'" % (config['user'])
+        print ("Logging in as '%s'" % (config['user']))
         server.login(config['user'], config['pass'])
-    except socket.gaierror, e:
+    except socket.gaierror as e:
         (err, desc) = e
-        print "ERROR: problem looking up server '%s' (%s %s)" % (
-            config['server'], err, desc)
+        print ("ERROR: problem looking up server '%s' (%s %s)" % (
+            config['server'], err, desc))
         sys.exit(3)
-    except socket.error, e:
+    except socket.error as e:
         if str(e) == "SSL_CTX_use_PrivateKey_file error":
-            print "ERROR: error reading private key file '%s'" % (
-                config['keyfilename'])
+            print ("ERROR: error reading private key file '%s'" % (
+                config['keyfilename']))
         elif str(e) == "SSL_CTX_use_certificate_chain_file error":
-            print "ERROR: error reading certificate chain file '%s'" % (
-                config['keyfilename'])
+            print ("ERROR: error reading certificate chain file '%s'" % (
+                config['keyfilename']))
         else:
-            print "ERROR: could not connect to '%s' (%s)" % (
-                config['server'], e)
+            print ("ERROR: could not connect to '%s' (%s)" % (
+                config['server'], e))
 
         sys.exit(4)
 
     return server
 
 
-def create_folder_structure(names):
+
+def create_basedir(basedir):
+    """ Create the base directory on disk """
+    if os.path.isdir(basedir):
+        return
+
+    try:
+        os.makedirs(basedir)
+    except OSError as e:
+        raise
+
+
+
+def create_folder_structure(names,basedir):
     """ Create the folder structure on disk """
     for imap_foldername, filename in sorted(names):
         disk_foldername = os.path.split(filename)[0]
         if disk_foldername:
             try:
-                # print "*** mkdir:", disk_foldername  # *DEBUG
-                os.mkdir(disk_foldername)
-            except OSError, e:
+                # print "*** makedirs:", disk_foldername  # *DEBUG
+                disk_path = os.path.join(basedir,disk_foldername)
+                os.makedirs(disk_path)
+            except OSError as e:
                 if e.errno != 17:
                     raise
 
@@ -679,48 +1065,182 @@ def main():
     """Main entry point"""
     try:
         config = get_config()
+        if config.get('folders') and config.get('exclude-folders'):
+            print("ERROR: You cannot use both --folders and --exclude-folders at the same time")
+            sys.exit(2)
         server = connect_and_login(config)
-        names = get_names(server, config['compress'], config['thunderbird'],
-                          config['nospinner'])
+        names = get_names(server,config['thunderbird'],config['nospinner'])
+        exclude_folders = []
         if config.get('folders'):
-            dirs = map(lambda x: x.strip(), config.get('folders').split(','))
+            dirs = list(map(lambda x: x.strip(), config.get('folders').split(',')))
             if config['thunderbird']:
                 dirs = [i.replace("Inbox", "INBOX", 1) if i.startswith("Inbox") else i
                         for i in dirs]
-            names = filter(lambda x: x[0] in dirs, names)
+            names = list(filter(lambda x: x[0] in dirs, names))
+        elif config.get('exclude-folders'):
+            exclude_folders = list(map(lambda x: x.strip(), config.get('exclude-folders').split(',')))
+
+        basedir = config.get('basedir')
+        if basedir.startswith('~'):
+            basedir = os.path.expanduser(basedir)
+        else:
+            basedir = os.path.abspath(config.get('basedir'))
+        
+        create_basedir(basedir)
 
         # for n, name in enumerate(names): # *DEBUG
         #   print n, name # *DEBUG
+        create_folder_structure(names,basedir)
 
-        create_folder_structure(names)
+        # Import GPG key if specified (for encryption)
+        if config.get('gpg_import_key') and config.get('gpg_encrypt'):
+            print ("\nImporting GPG public key...")
+            import_gpg_key(config['gpg_import_key'])
+
+        # S3 Restore: Download and decrypt files before restore
+        if config.get('restore') and config.get('s3_upload'):
+            print ("\nDownloading files from S3 for restore...")
+
+            temp_files_to_cleanup = []
+
+            try:
+                for foldername, filename in names:
+                    if foldername in exclude_folders:
+                        continue
+
+                    # Determine the filename to download (might be encrypted)
+                    download_filename = filename
+                    if config.get('gpg_encrypt'):
+                        download_filename = filename + '.gpg'
+
+                    print ("Downloading: %s" % download_filename)
+                    try:
+                        # Download from S3
+                        downloaded_file = download_from_s3(download_filename, config, basedir)
+
+                        # Decrypt if needed
+                        if config.get('gpg_encrypt'):
+                            print ("Decrypting: %s" % download_filename)
+                            try:
+                                decrypted_file = decrypt_file_gpg(downloaded_file)
+                                # Remove the encrypted file after decryption
+                                os.remove(downloaded_file)
+                                print ("  Decryption complete")
+                            except Exception as e:
+                                print ("  ERROR: %s" % str(e))
+                                continue
+
+                    except Exception as e:
+                        print ("  ERROR: %s" % str(e))
+                        continue
+
+                print ("\nS3 download complete\n")
+
+            except Exception as e:
+                print ("ERROR during S3 download: %s" % str(e))
 
         for name_pair in names:
             try:
                 foldername, filename = name_pair
-                fol_messages = scan_folder(
-                    server, foldername, config['nospinner'])
-                fil_messages = scan_file(filename, config['compress'],
-                                         config['overwrite'], config['nospinner'])
-                new_messages = {}
-                for msg_id in fol_messages.keys():
-                    if msg_id not in fil_messages:
-                        new_messages[msg_id] = fol_messages[msg_id]
+                # Skip excluded folders
+                if foldername in exclude_folders:
+                    print(f'Excluding folder "{foldername}"')
+                    continue
 
-                # for f in new_messages:
-                #  print "%s : %s" % (f, new_messages[f])
+                if config['restore']:
+                    # RESTORE MODE: Upload messages from mbox files to IMAP server
+                    fol_messages = scan_folder(
+                        server, foldername, config['nospinner'])
+                    fil_messages = scan_file(filename, False, config['nospinner'], basedir)
 
-                download_messages(server, filename, new_messages, config)
+                    # Find messages that are in file but not on server
+                    messages_to_upload = {}
+                    for msg_id in fil_messages.keys():
+                        if msg_id not in fol_messages:
+                            messages_to_upload[msg_id] = msg_id
 
-            except SkipFolderException, e:
-                print e
+                    upload_messages(server, foldername, filename, messages_to_upload,
+                                  config['nospinner'], basedir)
+                else:
+                    # BACKUP MODE: Download messages from IMAP server to mbox files
+                    fol_messages = scan_folder(
+                        server, foldername, config['nospinner'])
+                    fil_messages = scan_file(filename, config['overwrite'], config['nospinner'], basedir)
+                    new_messages = {}
+                    for msg_id in fol_messages.keys():
+                        if msg_id not in fil_messages:
+                            new_messages[msg_id] = fol_messages[msg_id]
 
-        print "Disconnecting"
+                    # for f in new_messages:
+                    #  print "%s : %s" % (f, new_messages[f])
+
+                    download_messages(server, filename, new_messages, config['overwrite'], config['nospinner'], config['thunderbird'], basedir, config['icloud'])
+
+            except SkipFolderException as e:
+                print (e)
+
+        print ("Disconnecting")
         server.logout()
-    except socket.error, e:
-        print "ERROR:", e
+
+        # S3 Upload: Process and upload mbox files after backup
+        if config.get('s3_upload') and not config.get('restore'):
+            print ("\nProcessing files for S3 upload...")
+
+            files_to_upload = []
+            temp_files_to_cleanup = []
+
+            try:
+                # Collect all mbox files
+                for foldername, filename in names:
+                    if foldername in exclude_folders:
+                        continue
+
+                    fullname = os.path.join(basedir, filename)
+                    if os.path.exists(fullname):
+                        file_to_upload = fullname
+
+                        # Encrypt if requested
+                        if config.get('gpg_encrypt'):
+                            print ("Encrypting: %s" % filename)
+                            try:
+                                encrypted_file = encrypt_file_gpg(fullname, config['gpg_recipient'])
+                                file_to_upload = encrypted_file
+                                temp_files_to_cleanup.append(encrypted_file)
+                            except Exception as e:
+                                print ("  ERROR: %s" % str(e))
+                                continue
+
+                        files_to_upload.append(file_to_upload)
+
+                # Upload files to S3
+                print ("\nUploading %d file(s) to S3..." % len(files_to_upload))
+                for file_path in files_to_upload:
+                    filename = os.path.basename(file_path)
+                    print ("Processing: %s" % filename)
+                    try:
+                        upload_to_s3(file_path, config)
+                    except Exception as e:
+                        print ("  ERROR: %s" % str(e))
+
+                print ("\nS3 upload complete")
+
+            finally:
+                # Clean up temporary encrypted files
+                if temp_files_to_cleanup:
+                    print ("Cleaning up temporary files...")
+                    for temp_file in temp_files_to_cleanup:
+                        try:
+                            if os.path.exists(temp_file):
+                                os.remove(temp_file)
+                                print ("  Removed: %s" % os.path.basename(temp_file))
+                        except Exception as e:
+                            print ("  WARNING: Could not remove %s: %s" % (temp_file, str(e)))
+    except socket.error as e:
+       
+        print ("ERROR:", e)
         sys.exit(4)
-    except imaplib.IMAP4.error, e:
-        print "ERROR:", e
+    except imaplib.IMAP4.error as e:
+        print ("ERROR:", e)
         sys.exit(5)
 
 
@@ -784,15 +1304,7 @@ def _fixed_socket_read(self, size=-1):
             buf_len += n
         return "".join(buffers)
 
-
-# Platform detection to enable socket patch
-if 'Darwin' in platform.platform() and '2.3.5' == platform.python_version():
-    socket._fileobject.read = _fixed_socket_read
-# 20181212: Windows 10 + Python 2.7 doesn't need this fix
-# (fix leads to error: object of type 'cStringIO.StringO' has no len())
-if 'Windows' in platform.platform() and '2.3.5' == platform.python_version():
-    socket._fileobject.read = _fixed_socket_read
-
+    
 if __name__ == '__main__':
     gc.enable()
     main()

@@ -53,7 +53,7 @@ sudo yum install gnupg
 brew install gnupg
 
 # Run backup
-python3 imapbackup38.py \
+python3 imapbackup.py \
   -s imap.example.com \
   -u user@example.com \
   -e

@@ -234,7 +234,7 @@ docker run --rm \
 
 ## Kubernetes
 
-Run scheduled backups and ad-hoc restores in Kubernetes using the Docker image. The container entrypoint is `/app/imapbackup38.py`, so you pass flags as container args.
+Run scheduled backups and ad-hoc restores in Kubernetes using the Docker image. The container entrypoint is `/app/imapbackup.py`, so you pass flags as container args.
 
 ### Prerequisites
 
@@ -357,7 +357,7 @@ spec:
               command: ["sh","-c"]
               args:
                 - >-
-                  /app/imapbackup38.py
+                  /app/imapbackup.py
                   -s imap.example.com -u user@example.com -p @/secrets/password -e --nospinner
                   --s3-upload --s3-endpoint=https://s3.example.com --s3-bucket=email-backups
                   --s3-access-key "$S3_ACCESS_KEY" --s3-secret-key "$S3_SECRET_KEY"

@@ -2,7 +2,7 @@
 *
 
 # Allow only what the image actually needs
-!imapbackup38.py
+!imapbackup.py
 !Dockerfile
 !.dockerignore
 !LICENSE

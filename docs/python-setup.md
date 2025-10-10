@@ -32,7 +32,7 @@ pip install -r requirements.txt
 sudo apt install gnupg  # Ubuntu/Debian
 
 # Run backup
-python3 imapbackup38.py -s imap.example.com -u user@example.com -e
+python3 imapbackup.py -s imap.example.com -u user@example.com -e
 
 # Deactivate when done
 deactivate
@@ -155,7 +155,7 @@ aws --version
 gpg --version
 
 # Test the script
-python3 imapbackup38.py --help
+python3 imapbackup.py --help
 ```
 
 ## Running Backups
@@ -167,7 +167,7 @@ python3 imapbackup38.py --help
 source venv/bin/activate
 
 # Run backup
-python3 imapbackup38.py \
+python3 imapbackup.py \
   -s imap.example.com \
   -u user@example.com \
   -e
@@ -181,7 +181,7 @@ deactivate
 ```bash
 source venv/bin/activate
 
-python3 imapbackup38.py \
+python3 imapbackup.py \
   -s imap.example.com \
   -u user@example.com \
   -e \
@@ -199,7 +199,7 @@ deactivate
 ```bash
 source venv/bin/activate
 
-python3 imapbackup38.py \
+python3 imapbackup.py \
   -s imap.example.com \
   -u user@example.com \
   -e \
@@ -226,7 +226,7 @@ deactivate
 source /path/to/imapbackup/venv/bin/activate
 
 # Run backup
-python3 /path/to/imapbackup/imapbackup38.py \
+python3 /path/to/imapbackup/imapbackup.py \
   -s imap.example.com \
   -u user@example.com \
   -p @/root/.imap_password \
@@ -267,7 +267,7 @@ After=network.target
 Type=oneshot
 User=backupuser
 WorkingDirectory=/home/backupuser/imapbackup
-ExecStart=/home/backupuser/imapbackup/venv/bin/python3 /home/backupuser/imapbackup/imapbackup38.py -s imap.example.com -u user@example.com -p @/home/backupuser/.imap_password -e -d /backups/email
+ExecStart=/home/backupuser/imapbackup/venv/bin/python3 /home/backupuser/imapbackup/imapbackup.py -s imap.example.com -u user@example.com -p @/home/backupuser/.imap_password -e -d /backups/email
 
 [Install]
 WantedBy=multi-user.target
@@ -435,11 +435,11 @@ chmod -R u+rwX venv/
 ```bash
 # ✓ Good
 source venv/bin/activate
-python3 imapbackup38.py ...
+python3 imapbackup.py ...
 
 # ✗ Bad (pollutes system Python)
 sudo pip install awscli
-python3 imapbackup38.py ...
+python3 imapbackup.py ...
 ```
 
 ### 2. Pin Dependency Versions
@@ -480,7 +480,7 @@ chmod 600 .env
 
 # Load in script
 source .env
-python3 imapbackup38.py -s "$IMAP_SERVER" -u "$IMAP_USER" ...
+python3 imapbackup.py -s "$IMAP_SERVER" -u "$IMAP_USER" ...
 ```
 
 ### 5. Separate Development and Production

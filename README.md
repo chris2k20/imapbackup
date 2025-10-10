@@ -23,8 +23,9 @@ Somewhat to my surprise it was considered useful by quite a few people throughou
 
 ## Requirements
 
-Python 2.x : `imapbackup.py` should work on Python 2.5 or any other 2.x version without any extra dependencies whatsoever. 
-Python 3.x : `imapbackup38.py` requires python 3.8 and above.
+Python 3.x : `imapbackup.py` requires Python 3.6 and above (tested with 3.8+).
+
+For Python 2.x support, see older versions of this repository.
 
 ## Contributing
 

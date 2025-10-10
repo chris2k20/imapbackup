@@ -26,7 +26,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy application
-COPY imapbackup38.py /usr/local/bin/imapbackup
+COPY imapbackup.py /usr/local/bin/imapbackup
 RUN chmod +x /usr/local/bin/imapbackup
 
 # Copy and import GPG public key (safe to include in image)
@@ -48,7 +48,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy application
-COPY imapbackup38.py /usr/local/bin/imapbackup
+COPY imapbackup.py /usr/local/bin/imapbackup
 RUN chmod +x /usr/local/bin/imapbackup
 
 # Copy public key (will be auto-imported on first run)
@@ -245,7 +245,7 @@ Simple file-based approach:
 gpg --armor --export backup@example.com > ~/keys/backup-public.asc
 
 # Use it in backup
-python3 imapbackup38.py \
+python3 imapbackup.py \
   -s imap.example.com \
   -u user@example.com \
   -e \
