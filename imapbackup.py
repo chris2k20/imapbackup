@@ -894,11 +894,17 @@ def print_usage():
     #     "                                                                               "
     print ("Usage: imapbackup [OPTIONS] -s HOST -u USERNAME [-p PASSWORD]")
     print ("   or: imapbackup --config=CONFIG_FILE [--restore]")
+    print ("   or: imapbackup")
     print ("")
     print ("Config File Mode:")
     print (" --config=FILE                 Load settings from YAML config file.")
     print ("                               Allows backing up multiple accounts.")
     print ("                               See config.example.yaml for format.")
+    print ("")
+    print (" Auto-detection:               If no arguments are provided, the script")
+    print ("                               automatically looks for 'config.yaml' or")
+    print ("                               'config.yml' in the current directory.")
+    print ("")
     print (" --restore                     Restore mode (use with --config).")
     print ("")
     print ("Command Line Mode:")
@@ -965,9 +971,9 @@ def process_cline():
               's3_upload': False, 'gpg_encrypt': False}
     errors = []
 
-    # empty command line
-    if not len(opts) and not len(extraargs):
-        print_usage()
+    # empty command line - will be handled in get_config() to check for default config files
+    # if not len(opts) and not len(extraargs):
+    #     print_usage()
 
     # process each command line option, save in config
     for option, value in opts:
@@ -1113,6 +1119,23 @@ def get_config():
     # }
 
     config, warnings, errors = process_cline()
+
+    # If no config file specified and no command line arguments, check for default config files
+    if 'config_file' not in config and not config.get('server') and not config.get('user'):
+        # Check for default config files
+        config_found = False
+        for default_config in ['config.yaml', 'config.yml']:
+            if os.path.exists(default_config):
+                print ("No arguments provided. Using default config file: %s" % default_config)
+                print ("")
+                config['config_file'] = default_config
+                config_found = True
+                break
+
+        # If no default config file found, show usage
+        if not config_found:
+            print_usage()
+
     config, warnings, errors = check_config(config, warnings, errors)
 
     # show warnings
@@ -1125,18 +1148,19 @@ def get_config():
     if len(errors):
         sys.exit(2)
 
-    # prompt for password, if necessary
-    if 'pass' not in config:
+    # prompt for password, if necessary (only for command-line mode, not config file mode)
+    if 'pass' not in config and 'config_file' not in config:
         config['pass'] = getpass.getpass()
 
-    # defaults
-    if 'port' not in config:
-        if config['usessl']:
-            config['port'] = 993
-        else:
-            config['port'] = 143
-    if 'timeout' not in config:
-        config['timeout'] = 60
+    # defaults (only for command-line mode)
+    if 'config_file' not in config:
+        if 'port' not in config:
+            if config['usessl']:
+                config['port'] = 993
+            else:
+                config['port'] = 143
+        if 'timeout' not in config:
+            config['timeout'] = 60
 
     # done!
     return config

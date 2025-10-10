@@ -181,9 +181,14 @@ accounts:
     pass: env:WORK_PASSWORD
 EOF
 
-# Backup all accounts with one command
+# Backup all accounts - auto-detects config.yaml
+python3 imapbackup.py
+
+# Or explicitly specify config file
 python3 imapbackup.py --config=config.yaml
 ```
+
+**Note:** If `config.yaml` or `config.yml` exists in the current directory, it will be automatically used when running without arguments.
 
 See **[Multi-Account Setup Guide](docs/multi-account-setup.md)** for complete documentation.
 
@@ -212,6 +217,10 @@ See **[Multi-Account Setup Guide](docs/multi-account-setup.md)** for complete do
 --config=FILE        Load settings from YAML config file
                      Allows backing up multiple accounts
                      See config.example.yaml for format
+
+                     Auto-detection: If no arguments are provided,
+                     the script automatically looks for config.yaml
+                     or config.yml in the current directory
 ```
 
 ### Folder Selection

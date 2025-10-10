@@ -9,6 +9,8 @@ keywords: multi-account backup, yaml configuration, email backup automation, mul
 
 Backup multiple email accounts with a single command using YAML configuration files.
 
+**Auto-detection:** Simply create a `config.yaml` file and run `python3 imapbackup.py` without any arguments. The script automatically detects and uses `config.yaml` or `config.yml` if present in the current directory.
+
 ---
 
 ## Quick Start
@@ -56,12 +58,20 @@ accounts:
 ### 4. Run Backup
 
 ```bash
-# Python
+# Automatic detection (looks for config.yaml or config.yml)
+python3 imapbackup.py
+
+# Or explicitly specify config file
 python3 imapbackup.py --config=config.yaml
 
-# Docker
+# Docker (automatic detection)
+docker run --rm -v $(pwd):/data user2k20/imapbackup
+
+# Docker (explicit config)
 docker run --rm -v $(pwd):/data user2k20/imapbackup --config=/data/config.yaml
 ```
+
+**Note:** If you run the script without any arguments and a `config.yaml` or `config.yml` file exists in the current directory, it will automatically be used.
 
 ---
 
@@ -375,18 +385,36 @@ accounts:
 ### Basic Backup
 
 ```bash
+# Automatic config detection
+python3 imapbackup.py
+
+# Or explicitly specify config file
 python3 imapbackup.py --config=config.yaml
+
+# Custom config file location
+python3 imapbackup.py --config=/path/to/my-config.yaml
 ```
 
 ### Restore Mode
 
 ```bash
+# Restore all accounts from config
+python3 imapbackup.py --restore
+
+# Or explicitly specify config file
 python3 imapbackup.py --config=config.yaml --restore
 ```
 
 ### Docker
 
 ```bash
+# Automatic config detection (mounts current directory as /data)
+docker run --rm \
+  -v $(pwd):/data \
+  -e GPG_PUBLIC_KEY="$(cat ~/keys/public.asc)" \
+  user2k20/imapbackup
+
+# Explicit config file
 docker run --rm \
   -v $(pwd)/backups:/backups \
   -v $(pwd)/config.yaml:/config.yaml \
