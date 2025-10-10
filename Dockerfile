@@ -48,5 +48,5 @@ LABEL org.opencontainers.image.title="imapbackup" \
       org.opencontainers.image.source="https://github.com/${GITHUB_REPOSITORY}" \
       org.opencontainers.image.revision="${GIT_SHA}"
 
-# Use tini as entrypoint and forward args to the script
-ENTRYPOINT ["tini","--","/app/imapbackup.py"]
+# Use tini as entrypoint and run via python to avoid shebang env -S issues
+ENTRYPOINT ["tini","--","python3","-u","/app/imapbackup.py"]
