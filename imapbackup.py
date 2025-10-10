@@ -21,7 +21,6 @@ __contributors__ = "jwagnerhki, Bob Ippolito, Michael Leonhard, Giuseppe Scrivan
 # Rui Carmo: original author, up to v1.2e
 
 # = TODO =
-# - Add proper exception handlers to scanFile() and downloadMessages()
 # - Migrate mailbox usage from rfc822 module to email module
 # - Investigate using the noseek mailbox/email option to improve speed
 # - Use the email module to normalize downloaded messages
@@ -120,6 +119,57 @@ BLANKS_RE = re.compile(r'\s+', re.MULTILINE)
 # Constants
 UUID = '19AF1258-1AAF-44EF-9D9A-731079D6FAD7'  # Used to generate Message-Ids
 
+# Retry configuration
+DEFAULT_MAX_RETRIES = 3
+DEFAULT_RETRY_DELAY = 1.0  # seconds
+DEFAULT_RETRY_BACKOFF = 2.0  # exponential backoff multiplier
+
+
+def retry_on_network_error(func, max_retries=DEFAULT_MAX_RETRIES, delay=DEFAULT_RETRY_DELAY, backoff=DEFAULT_RETRY_BACKOFF, operation_name=None):
+    """
+    Retry a function that may fail due to network errors.
+
+    Args:
+        func: Callable function to retry
+        max_retries: Maximum number of retry attempts
+        delay: Initial delay between retries in seconds
+        backoff: Exponential backoff multiplier
+        operation_name: Optional name for logging purposes
+
+    Returns:
+        The return value of the function if successful
+
+    Raises:
+        The last exception encountered if all retries fail
+    """
+    last_exception = None
+    current_delay = delay
+
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except (socket.error, socket.timeout, imaplib.IMAP4.error) as e:
+            last_exception = e
+            if attempt < max_retries - 1:  # Don't sleep on last attempt
+                retry_msg = "Attempt %d/%d failed" % (attempt + 1, max_retries)
+                if operation_name:
+                    retry_msg = "%s: %s" % (operation_name, retry_msg)
+                retry_msg += ". Retrying in %.1f seconds..." % current_delay
+                print ("\n  %s" % retry_msg)
+                time.sleep(current_delay)
+                current_delay *= backoff
+            else:
+                error_msg = "All %d attempts failed" % max_retries
+                if operation_name:
+                    error_msg = "%s: %s" % (operation_name, error_msg)
+                print ("\n  %s" % error_msg)
+        except Exception as e:
+            # For non-network errors, don't retry
+            raise
+
+    # All retries exhausted
+    raise last_exception
+
 
 def string_from_file(value):
     """
@@ -177,36 +227,46 @@ def import_gpg_key(source):
 
         # 2. Check if it's a URL (http:// or https://)
         elif source.startswith('http://') or source.startswith('https://'):
-            try:
-                # Use subprocess to call curl or wget
-                # Try curl first
+            # Retry logic for downloading GPG key
+            def download_key_operation():
                 try:
-                    result = subprocess.run(
-                        ['curl', '-fsSL', source],
-                        capture_output=True,
-                        text=True,
-                        check=True,
-                        timeout=30
-                    )
-                    key_content = result.stdout
-                except (subprocess.CalledProcessError, FileNotFoundError):
-                    # Fall back to wget
-                    result = subprocess.run(
-                        ['wget', '-qO-', source],
-                        capture_output=True,
-                        text=True,
-                        check=True,
-                        timeout=30
-                    )
-                    key_content = result.stdout
+                    # Try curl first
+                    try:
+                        result = subprocess.run(
+                            ['curl', '-fsSL', source],
+                            capture_output=True,
+                            text=True,
+                            check=True,
+                            timeout=30
+                        )
+                        return result.stdout
+                    except (subprocess.CalledProcessError, FileNotFoundError):
+                        # Fall back to wget
+                        result = subprocess.run(
+                            ['wget', '-qO-', source],
+                            capture_output=True,
+                            text=True,
+                            check=True,
+                            timeout=30
+                        )
+                        return result.stdout
+                except subprocess.TimeoutExpired:
+                    raise socket.timeout("Timeout while downloading key")
+                except subprocess.CalledProcessError as e:
+                    raise socket.error("Failed to download key: %s" % e.stderr)
+
+            try:
+                key_content = retry_on_network_error(
+                    download_key_operation,
+                    max_retries=3,
+                    operation_name="Download GPG key from %s" % source
+                )
 
                 if not key_content or len(key_content) < 100:
                     raise Exception("Downloaded key appears to be empty or invalid")
                 source_description = "URL %s" % source
-            except subprocess.TimeoutExpired:
-                raise Exception("Timeout while downloading key from %s" % source)
             except Exception as e:
-                raise Exception("Failed to download key from URL: %s" % str(e))
+                raise Exception("Failed to download key from URL after retries: %s" % str(e))
 
         # 3. Check if it's a file path
         elif os.path.exists(os.path.expanduser(source)):
@@ -326,295 +386,520 @@ def decrypt_file_gpg(input_file):
 
 
 def download_from_s3(filename, config, destination_dir):
-    """Download a file from S3-compatible storage using AWS CLI"""
+    """Download a file from S3-compatible storage using AWS CLI with retry logic"""
+    # Check if aws CLI is available
     try:
-        # Check if aws CLI is available
+        subprocess.run(['aws', '--version'], capture_output=True, check=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        raise Exception("AWS CLI not found. Please install awscli to use S3 download.")
+
+    # Prepare S3 object key
+    s3_prefix = config.get('s3_prefix', '').rstrip('/')
+    if s3_prefix:
+        s3_key = s3_prefix + '/' + filename
+    else:
+        s3_key = filename
+
+    s3_uri = 's3://%s/%s' % (config['s3_bucket'], s3_key)
+
+    # Destination path
+    destination_path = os.path.join(destination_dir, filename)
+
+    # Set up environment variables for AWS credentials
+    env = os.environ.copy()
+    env['AWS_ACCESS_KEY_ID'] = config['s3_access_key']
+    env['AWS_SECRET_ACCESS_KEY'] = config['s3_secret_key']
+
+    # Build AWS CLI command
+    cmd = [
+        'aws', 's3', 'cp',
+        s3_uri,
+        destination_path,
+        '--endpoint-url', config['s3_endpoint']
+    ]
+
+    print ("  Downloading from S3: %s" % s3_uri)
+
+    # Retry logic for S3 download
+    def download_operation():
         try:
-            subprocess.run(['aws', '--version'], capture_output=True, check=True)
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            raise Exception("AWS CLI not found. Please install awscli to use S3 download.")
+            result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=True, timeout=300)
+            return result
+        except subprocess.CalledProcessError as e:
+            # Treat S3 download failures as network errors that should be retried
+            raise socket.error("S3 download failed: %s" % e.stderr)
+        except subprocess.TimeoutExpired:
+            raise socket.timeout("S3 download timed out")
 
-        # Prepare S3 object key
-        s3_prefix = config.get('s3_prefix', '').rstrip('/')
-        if s3_prefix:
-            s3_key = s3_prefix + '/' + filename
-        else:
-            s3_key = filename
-
-        s3_uri = 's3://%s/%s' % (config['s3_bucket'], s3_key)
-
-        # Destination path
-        destination_path = os.path.join(destination_dir, filename)
-
-        # Set up environment variables for AWS credentials
-        env = os.environ.copy()
-        env['AWS_ACCESS_KEY_ID'] = config['s3_access_key']
-        env['AWS_SECRET_ACCESS_KEY'] = config['s3_secret_key']
-
-        # Build AWS CLI command
-        cmd = [
-            'aws', 's3', 'cp',
-            s3_uri,
-            destination_path,
-            '--endpoint-url', config['s3_endpoint']
-        ]
-
-        print ("  Downloading from S3: %s" % s3_uri)
-
-        result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=True)
-
+    try:
+        retry_on_network_error(
+            download_operation,
+            max_retries=3,
+            operation_name="S3 download %s" % filename
+        )
         print ("  Download complete")
         return destination_path
-
-    except subprocess.CalledProcessError as e:
-        raise Exception("S3 download failed: %s\n%s" % (e.stderr, e.stdout))
+    except Exception as e:
+        raise Exception("S3 download failed after retries: %s" % str(e))
 
 
 def upload_to_s3(file_path, config):
-    """Upload a file to S3-compatible storage using AWS CLI"""
+    """Upload a file to S3-compatible storage using AWS CLI with retry logic"""
+    # Check if aws CLI is available
     try:
-        # Check if aws CLI is available
+        subprocess.run(['aws', '--version'], capture_output=True, check=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        raise Exception("AWS CLI not found. Please install awscli to use S3 upload.")
+
+    # Prepare S3 object key
+    filename = os.path.basename(file_path)
+    s3_prefix = config.get('s3_prefix', '').rstrip('/')
+    if s3_prefix:
+        s3_key = s3_prefix + '/' + filename
+    else:
+        s3_key = filename
+
+    s3_uri = 's3://%s/%s' % (config['s3_bucket'], s3_key)
+
+    # Set up environment variables for AWS credentials
+    env = os.environ.copy()
+    env['AWS_ACCESS_KEY_ID'] = config['s3_access_key']
+    env['AWS_SECRET_ACCESS_KEY'] = config['s3_secret_key']
+
+    # Build AWS CLI command
+    cmd = [
+        'aws', 's3', 'cp',
+        file_path,
+        s3_uri,
+        '--endpoint-url', config['s3_endpoint']
+    ]
+
+    print ("  Uploading to S3: %s" % s3_uri)
+
+    # Retry logic for S3 upload
+    def upload_operation():
         try:
-            subprocess.run(['aws', '--version'], capture_output=True, check=True)
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            raise Exception("AWS CLI not found. Please install awscli to use S3 upload.")
+            result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=True, timeout=300)
+            return result
+        except subprocess.CalledProcessError as e:
+            # Treat S3 upload failures as network errors that should be retried
+            raise socket.error("S3 upload failed: %s" % e.stderr)
+        except subprocess.TimeoutExpired:
+            raise socket.timeout("S3 upload timed out")
 
-        # Prepare S3 object key
-        filename = os.path.basename(file_path)
-        s3_prefix = config.get('s3_prefix', '').rstrip('/')
-        if s3_prefix:
-            s3_key = s3_prefix + '/' + filename
-        else:
-            s3_key = filename
-
-        s3_uri = 's3://%s/%s' % (config['s3_bucket'], s3_key)
-
-        # Set up environment variables for AWS credentials
-        env = os.environ.copy()
-        env['AWS_ACCESS_KEY_ID'] = config['s3_access_key']
-        env['AWS_SECRET_ACCESS_KEY'] = config['s3_secret_key']
-
-        # Build AWS CLI command
-        cmd = [
-            'aws', 's3', 'cp',
-            file_path,
-            s3_uri,
-            '--endpoint-url', config['s3_endpoint']
-        ]
-
-        print ("  Uploading to S3: %s" % s3_uri)
-
-        result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=True)
-
+    try:
+        retry_on_network_error(
+            upload_operation,
+            max_retries=3,
+            operation_name="S3 upload %s" % filename
+        )
         print ("  Upload complete")
         return True
-
-    except subprocess.CalledProcessError as e:
-        raise Exception("S3 upload failed: %s\n%s" % (e.stderr, e.stdout))
+    except Exception as e:
+        raise Exception("S3 upload failed after retries: %s" % str(e))
 
 
 def upload_messages(server, foldername, filename, messages_to_upload, nospinner, basedir):
-    """Upload messages from mbox file to IMAP folder"""
+    """Upload messages from mbox file to IMAP folder
 
+    Returns:
+        tuple: (uploaded_count, failed_count, total_bytes)
+    """
     fullname = os.path.join(basedir, filename)
+    uploaded = 0
+    failed = 0
+    total_size = 0
 
     # Check if file exists
     if not os.path.exists(fullname):
         print ("File %s: not found, skipping" % filename)
-        return
+        return (0, len(messages_to_upload), 0)
 
     # nothing to do
     if not len(messages_to_upload):
         print ("Messages to upload: 0")
-        return
+        return (0, 0, 0)
 
     spinner = Spinner("Uploading %s messages to %s" % (len(messages_to_upload), foldername),
                       nospinner)
 
-    # Open the mbox file
-    mbox = mailbox.mbox(fullname)
+    try:
+        # Open the mbox file
+        try:
+            mbox = mailbox.mbox(fullname)
+        except (IOError, OSError) as e:
+            spinner.stop()
+            print ("\nERROR: Cannot open mbox file %s: %s" % (fullname, str(e)))
+            return (0, len(messages_to_upload), 0)
+        except Exception as e:
+            spinner.stop()
+            print ("\nERROR: Mailbox file %s is corrupted or invalid: %s" % (fullname, str(e)))
+            return (0, len(messages_to_upload), 0)
 
-    uploaded = 0
-    total_size = 0
+        # Iterate through messages in the mbox file
+        try:
+            for message in mbox:
+                try:
+                    # Get the Message-Id
+                    try:
+                        msg_id = message.get('Message-Id', '').strip()
+                    except Exception as e:
+                        print ("\nWARNING: Cannot read Message-Id from message: %s" % str(e))
+                        failed += 1
+                        spinner.spin()
+                        continue
 
-    # Iterate through messages in the mbox file
-    for message in mbox:
-        # Get the Message-Id
-        msg_id = message.get('Message-Id', '').strip()
+                    # Check if this message needs to be uploaded
+                    if msg_id in messages_to_upload:
+                        # Convert message to string (bytes)
+                        try:
+                            msg_bytes = bytes(str(message), 'utf-8')
+                        except Exception as e:
+                            print ("\nERROR: Cannot convert message %s to bytes: %s" % (msg_id, str(e)))
+                            failed += 1
+                            spinner.spin()
+                            continue
 
-        # Check if this message needs to be uploaded
-        if msg_id in messages_to_upload:
-            # Convert message to string (bytes)
-            msg_bytes = bytes(str(message), 'utf-8')
+                        # Upload to IMAP server with retry logic
+                        # Use APPEND command to add message to folder
+                        try:
+                            foldername_quoted = '"{}"'.format(foldername)
 
-            # Upload to IMAP server
-            # Use APPEND command to add message to folder
+                            # APPEND the message with retry
+                            def append_operation():
+                                return server.append(foldername_quoted, None, None, msg_bytes)
+
+                            result = retry_on_network_error(
+                                append_operation,
+                                operation_name="Upload message %s" % msg_id
+                            )
+
+                            if result[0] == 'OK':
+                                uploaded += 1
+                                total_size += len(msg_bytes)
+                            else:
+                                print ("\nWARNING: Failed to upload message with ID %s: %s" % (msg_id, result))
+                                failed += 1
+
+                        except (imaplib.IMAP4.error, socket.error, socket.timeout) as e:
+                            print ("\nERROR: Network error uploading message %s after retries: %s" % (msg_id, str(e)))
+                            failed += 1
+                        except Exception as e:
+                            print ("\nERROR: Unexpected error uploading message %s: %s" % (msg_id, str(e)))
+                            failed += 1
+
+                except Exception as e:
+                    print ("\nERROR: Error processing message for upload: %s" % str(e))
+                    failed += 1
+
+                spinner.spin()
+
+        except Exception as e:
+            spinner.stop()
+            print ("\nERROR: Error reading messages from mbox: %s" % str(e))
             try:
-                # Select the folder for append (need to ensure it exists)
-                foldername_quoted = '"{}"'.format(foldername)
+                mbox.close()
+            except:
+                pass
+            return (uploaded, len(messages_to_upload) - uploaded, total_size)
 
-                # APPEND the message
-                result = server.append(foldername_quoted, None, None, msg_bytes)
+        try:
+            mbox.close()
+        except Exception as e:
+            print ("\nWARNING: Error closing mbox file %s: %s" % (filename, str(e)))
 
-                if result[0] == 'OK':
-                    uploaded += 1
-                    total_size += len(msg_bytes)
-                else:
-                    print ("\nWarning: Failed to upload message with ID: %s" % msg_id)
+        spinner.stop()
 
-            except Exception as e:
-                print ("\nError uploading message %s: %s" % (msg_id, str(e)))
+        if failed > 0:
+            print (": %s uploaded, %s total (%d failed)" % (uploaded, pretty_byte_count(total_size), failed))
+        else:
+            print (": %s uploaded, %s total" % (uploaded, pretty_byte_count(total_size)))
 
-            spinner.spin()
+        return (uploaded, failed, total_size)
 
-    mbox.close()
-    spinner.stop()
-    print (": %s uploaded, %s total" % (uploaded, pretty_byte_count(total_size)))
+    except Exception as e:
+        spinner.stop()
+        print ("\nERROR: Fatal error in upload_messages: %s" % str(e))
+        return (uploaded, len(messages_to_upload) - uploaded, total_size)
 
 
 def download_messages(server, filename, messages, overwrite, nospinner, thunderbird, basedir, icloud):
-    """Download messages from folder and append to mailbox"""
+    """Download messages from folder and append to mailbox
 
+    Returns:
+        tuple: (success_count, failed_count, total_bytes)
+    """
     fullname = os.path.join(basedir,filename)
 
-    if overwrite and os.path.exists(fullname):
-        print ("Deleting mbox: {0} at: {1}".format(filename,fullname))
-        os.remove(fullname)
-    
-    # Open disk file for append in binary mode
-    mbox = open(fullname, 'ab')
+    success_count = 0
+    failed_count = 0
+    total = 0
+    biggest = 0
 
-    # the folder has already been selected by scanFolder()
+    try:
+        if overwrite and os.path.exists(fullname):
+            print ("Deleting mbox: {0} at: {1}".format(filename,fullname))
+            try:
+                os.remove(fullname)
+            except OSError as e:
+                print ("ERROR: Cannot delete file %s: %s" % (fullname, str(e)))
+                return (0, len(messages), 0)
 
-    # nothing to do
-    if not len(messages):
-        print ("New messages: 0")
+        # Open disk file for append in binary mode
+        try:
+            mbox = open(fullname, 'ab')
+        except IOError as e:
+            print ("ERROR: Cannot open file %s for writing: %s" % (fullname, str(e)))
+            return (0, len(messages), 0)
+
+        # nothing to do
+        if not len(messages):
+            print ("New messages: 0")
+            mbox.close()
+            return (0, 0, 0)
+
+        spinner = Spinner("Downloading %s new messages to %s" % (len(messages), filename),
+                          nospinner)
+        from_re = re.compile(b"\n(>*)From ")
+
+        # each new message
+        for msg_id in messages.keys():
+            try:
+                # This "From" and the terminating newline below delimit messages
+                # in mbox files.  Note that RFC 4155 specifies that the date be
+                # in the same format as the output of ctime(3), which is required
+                # by ISO C to use English day and month abbreviations.
+                buf = "From nobody %s\n" % time.ctime()
+                # If this is one of our synthesised Message-IDs, insert it before
+                # the other headers
+                if UUID in msg_id:
+                    buf = buf + "Message-Id: %s\n" % msg_id
+
+                # convert to bytes before writing to file of type binary
+                buf_bytes=bytes(buf,'utf-8')
+                mbox.write(buf_bytes)
+
+                # fetch message with retry logic
+                msg_id_str = str(messages[msg_id])
+                try:
+                    def fetch_operation():
+                        return server.fetch(msg_id_str, "(BODY.PEEK[])" if icloud else "(RFC822)")
+
+                    typ, data = retry_on_network_error(
+                        fetch_operation,
+                        operation_name="Fetch message %s" % msg_id_str
+                    )
+                except (imaplib.IMAP4.error, socket.error, socket.timeout) as e:
+                    print ("\nWARNING: Failed to fetch message %s after retries: %s" % (msg_id_str, str(e)))
+                    failed_count += 1
+                    spinner.spin()
+                    continue
+
+                if typ != 'OK' or not data or not data[0]:
+                    print ("\nWARNING: FETCH returned unexpected response for message %s" % msg_id_str)
+                    failed_count += 1
+                    spinner.spin()
+                    continue
+
+                try:
+                    data_bytes = data[0][1]
+                except (IndexError, TypeError) as e:
+                    print ("\nWARNING: Cannot extract data from message %s: %s" % (msg_id_str, str(e)))
+                    failed_count += 1
+                    spinner.spin()
+                    continue
+
+                text_bytes = data_bytes.strip().replace(b'\r', b'')
+                if thunderbird:
+                    # This avoids Thunderbird mistaking a line starting "From  " as the start
+                    # of a new message. _Might_ also apply to other mail lients - unknown
+                    text_bytes = text_bytes.replace(b"\nFrom ", b"\n From ")
+                else:
+                    # Perform >From quoting as described by RFC 4155 and the qmail docs.
+                    # https://www.rfc-editor.org/rfc/rfc4155.txt
+                    # http://qmail.org/qmail-manual-html/man5/mbox.html
+                    text_bytes = from_re.sub(b"\n>\\1From ", text_bytes)
+
+                try:
+                    mbox.write(text_bytes)
+                    mbox.write(b'\n\n')
+                except IOError as e:
+                    print ("\nERROR: Failed to write message %s to disk: %s" % (msg_id_str, str(e)))
+                    failed_count += 1
+                    spinner.spin()
+                    continue
+
+                size = len(text_bytes)
+                biggest = max(size, biggest)
+                total += size
+                success_count += 1
+
+                del data
+                gc.collect()
+
+            except Exception as e:
+                # Catch-all for unexpected errors
+                print ("\nERROR: Unexpected error processing message %s: %s" % (msg_id, str(e)))
+                failed_count += 1
+
+            spinner.spin()
+
         mbox.close()
-        return
+        spinner.stop()
 
-    spinner = Spinner("Downloading %s new messages to %s" % (len(messages), filename),
-                      nospinner)
-    total = biggest = 0
-    from_re = re.compile(b"\n(>*)From ")
-
-    # each new message
-    for msg_id in messages.keys():
-
-        # This "From" and the terminating newline below delimit messages
-        # in mbox files.  Note that RFC 4155 specifies that the date be
-        # in the same format as the output of ctime(3), which is required
-        # by ISO C to use English day and month abbreviations.
-        buf = "From nobody %s\n" % time.ctime()
-        # If this is one of our synthesised Message-IDs, insert it before
-        # the other headers
-        if UUID in msg_id:
-            buf = buf + "Message-Id: %s\n" % msg_id
-
-        # convert to bytes before writing to file of type binary
-        buf_bytes=bytes(buf,'utf-8')
-        mbox.write(buf_bytes)
-
-        # fetch message
-        msg_id_str = str(messages[msg_id])
-        typ, data = server.fetch(msg_id_str, "(BODY.PEEK[])" if icloud else "(RFC822)")
-
-
-        assert('OK' == typ)
-        data_bytes = data[0][1]
-
-        text_bytes = data_bytes.strip().replace(b'\r', b'')
-        if thunderbird:
-            # This avoids Thunderbird mistaking a line starting "From  " as the start
-            # of a new message. _Might_ also apply to other mail lients - unknown
-            text_bytes = text_bytes.replace(b"\nFrom ", b"\n From ")
+        if failed_count > 0:
+            print (": %s total, %s for largest message (%d succeeded, %d failed)" %
+                   (pretty_byte_count(total), pretty_byte_count(biggest), success_count, failed_count))
         else:
-            # Perform >From quoting as described by RFC 4155 and the qmail docs.
-            # https://www.rfc-editor.org/rfc/rfc4155.txt
-            # http://qmail.org/qmail-manual-html/man5/mbox.html
-            text_bytes = from_re.sub(b"\n>\\1From ", text_bytes)
-        mbox.write(text_bytes)
-        mbox.write(b'\n\n')
+            print (": %s total, %s for largest message" % (pretty_byte_count(total),
+                                                          pretty_byte_count(biggest)))
 
-        size = len(text_bytes)
-        biggest = max(size, biggest)
-        total += size
+        return (success_count, failed_count, total)
 
-        del data
-        gc.collect()
-        spinner.spin()
-
-    mbox.close()
-    spinner.stop()
-    print (": %s total, %s for largest message" % (pretty_byte_count(total),
-                                                  pretty_byte_count(biggest)))
+    except Exception as e:
+        print ("ERROR: Fatal error in download_messages for %s: %s" % (filename, str(e)))
+        return (success_count, len(messages) - success_count, total)
 
 
 def scan_file(filename, overwrite, nospinner, basedir):
-    """Gets IDs of messages in the specified mbox file"""
+    """Gets IDs of messages in the specified mbox file
+
+    Returns:
+        dict: Dictionary of message IDs found in file, or empty dict on error
+    """
     # file will be overwritten
     if overwrite:
-        return []
-    
+        return {}
+
     fullname = os.path.join(basedir,filename)
 
     # file doesn't exist
     if not os.path.exists(fullname):
         print ("File %s: not found" % filename)
-        return []
+        return {}
 
     spinner = Spinner("File %s" % filename, nospinner)
-
-    # open the mailbox file for read
-    mbox = mailbox.mbox(fullname)
-
     messages = {}
 
-    # each message
-    i = 0
-    HEADER_MESSAGE_ID='Message-Id'
-    for message in mbox:
-        header = ''
-        # We assume all messages on disk have message-ids
+    try:
+        # open the mailbox file for read
         try:
-            header = "{0}: {1}".format(HEADER_MESSAGE_ID,message.get(HEADER_MESSAGE_ID))
-        except KeyError:
-            # No message ID was found. Warn the user and move on
-            print
-            print ("WARNING: Message #%d in %s" % (i, filename),)
-            print ("has no {0} header.".format(HEADER_MESSAGE_ID))
+            mbox = mailbox.mbox(fullname)
+        except (IOError, OSError) as e:
+            spinner.stop()
+            print ("\nERROR: Cannot open mbox file %s: %s" % (fullname, str(e)))
+            return {}
+        except Exception as e:
+            spinner.stop()
+            print ("\nERROR: Mailbox file %s is corrupted or invalid: %s" % (fullname, str(e)))
+            return {}
 
-        header = BLANKS_RE.sub(' ', header.strip())
+        # each message
+        i = 0
+        HEADER_MESSAGE_ID='Message-Id'
+
         try:
-            msg_id = MSGID_RE.match(header).group(1)
-            if msg_id not in messages.keys():
-                # avoid adding dupes
-                messages[msg_id] = msg_id
-        except AttributeError:
-            # Message-Id was found but could somehow not be parsed by regexp
-            # (highly bloody unlikely)
-            print
-            print ("WARNING: Message #%d in %s" % (i, filename),)
-            print ("has a malformed {0} header.".format(HEADER_MESSAGE_ID))
-        spinner.spin()
-        i = i + 1
+            for message in mbox:
+                try:
+                    header = ''
+                    # We assume all messages on disk have message-ids
+                    try:
+                        header = "{0}: {1}".format(HEADER_MESSAGE_ID,message.get(HEADER_MESSAGE_ID))
+                    except KeyError:
+                        # No message ID was found. Warn the user and move on
+                        print ("\nWARNING: Message #%d in %s has no {0} header.".format(HEADER_MESSAGE_ID) % (i, filename))
+                        i += 1
+                        spinner.spin()
+                        continue
+                    except Exception as e:
+                        print ("\nWARNING: Cannot read headers from message #%d in %s: %s" % (i, filename, str(e)))
+                        i += 1
+                        spinner.spin()
+                        continue
 
-    # done
-    mbox.close()
-    spinner.stop()
-    print (": %d messages" % (len(messages.keys())))
-    return messages
+                    header = BLANKS_RE.sub(' ', header.strip())
+                    try:
+                        msg_id = MSGID_RE.match(header).group(1)
+                        if msg_id not in messages.keys():
+                            # avoid adding dupes
+                            messages[msg_id] = msg_id
+                    except (AttributeError, IndexError):
+                        # Message-Id was found but could somehow not be parsed by regexp
+                        print ("\nWARNING: Message #%d in %s has a malformed {0} header.".format(HEADER_MESSAGE_ID) % (i, filename))
+
+                except Exception as e:
+                    # Catch-all for unexpected errors processing individual message
+                    print ("\nWARNING: Error processing message #%d in %s: %s" % (i, filename, str(e)))
+
+                spinner.spin()
+                i = i + 1
+
+        except Exception as e:
+            # Error iterating through mailbox
+            spinner.stop()
+            print ("\nERROR: Failed while reading mailbox %s: %s" % (filename, str(e)))
+            print ("Recovered %d messages before error" % len(messages))
+            try:
+                mbox.close()
+            except:
+                pass
+            return messages
+
+        # done
+        try:
+            mbox.close()
+        except Exception as e:
+            print ("\nWARNING: Error closing mbox file %s: %s" % (filename, str(e)))
+
+        spinner.stop()
+        print (": %d messages" % (len(messages.keys())))
+        return messages
+
+    except Exception as e:
+        spinner.stop()
+        print ("\nERROR: Fatal error in scan_file for %s: %s" % (filename, str(e)))
+        return {}
 
 
 def scan_folder(server, foldername, nospinner):
-    """Gets IDs of messages in the specified folder, returns id:num dict"""
+    """Gets IDs of messages in the specified folder, returns id:num dict
+
+    Returns:
+        dict: Dictionary mapping message IDs to message numbers, or empty dict on error
+
+    Raises:
+        SkipFolderException: When folder cannot be accessed (to allow continuing with next folder)
+    """
     messages = {}
-    foldername = '"{}"'.format(foldername)
-    spinner = Spinner("Folder %s" % foldername, nospinner)
+    foldername_quoted = '"{}"'.format(foldername)
+    spinner = Spinner("Folder %s" % foldername_quoted, nospinner)
+
     try:
-        typ, data = server.select(foldername, readonly=True)
+        # Select the folder with retry logic
+        try:
+            def select_operation():
+                return server.select(foldername_quoted, readonly=True)
+
+            typ, data = retry_on_network_error(
+                select_operation,
+                operation_name="Select folder %s" % foldername_quoted
+            )
+        except (imaplib.IMAP4.error, socket.error, socket.timeout) as e:
+            spinner.stop()
+            raise SkipFolderException("SELECT failed for %s after retries: %s" % (foldername_quoted, str(e)))
+        except Exception as e:
+            spinner.stop()
+            raise SkipFolderException("Unexpected error selecting folder %s: %s" % (foldername_quoted, str(e)))
+
         if 'OK' != typ:
+            spinner.stop()
             raise SkipFolderException("SELECT failed: %s" % data)
-        num_msgs = int(data[0])
+
+        try:
+            num_msgs = int(data[0])
+        except (ValueError, IndexError, TypeError) as e:
+            spinner.stop()
+            raise SkipFolderException("Cannot parse message count for %s: %s" % (foldername_quoted, str(e)))
 
         # Retrieve all Message-Id headers, making sure we don't mark all messages as read.
         #
@@ -629,39 +914,84 @@ def scan_folder(server, foldername, nospinner):
         #   ...
         #  ]
         if num_msgs > 0:
-            typ, data = server.fetch(f'1:{num_msgs}', '(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])')
+            try:
+                def fetch_headers_operation():
+                    return server.fetch(f'1:{num_msgs}', '(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])')
+
+                typ, data = retry_on_network_error(
+                    fetch_headers_operation,
+                    operation_name="Fetch headers from %s" % foldername_quoted
+                )
+            except (imaplib.IMAP4.error, socket.error, socket.timeout) as e:
+                spinner.stop()
+                raise SkipFolderException("FETCH failed for %s after retries: %s" % (foldername_quoted, str(e)))
+            except Exception as e:
+                spinner.stop()
+                raise SkipFolderException("Unexpected error fetching headers from %s: %s" % (foldername_quoted, str(e)))
+
             if 'OK' != typ:
+                spinner.stop()
                 raise SkipFolderException("FETCH failed: %s" % (data))
 
         # each message
         for i in range(0, num_msgs):
             num = 1 + i
 
-            # Double the index because of the terminating parenthesis after each tuple.
-            data_str = str(data[2 * i][1], 'utf-8', 'replace')
-            header = data_str.strip()
-
-            # remove newlines inside Message-Id (a dumb Exchange trait)
-            header = BLANKS_RE.sub(' ', header)
             try:
-                msg_id = MSGID_RE.match(header).group(1)
-                if msg_id not in messages.keys():
-                    # avoid adding dupes
-                    messages[msg_id] = num
-            except (IndexError, AttributeError):
-                # Some messages may have no Message-Id, so we'll synthesise one
-                # (this usually happens with Sent, Drafts and .Mac news)
-                msg_typ, msg_data = server.fetch(
-                    str(num), '(BODY[HEADER.FIELDS (FROM TO CC DATE SUBJECT)])')
-                if 'OK' != msg_typ:
-                    raise SkipFolderException(
-                        "FETCH %s failed: %s" % (num, msg_data))
-                data_str = str(msg_data[0][1], 'utf-8', 'replace')
+                # Double the index because of the terminating parenthesis after each tuple.
+                data_str = str(data[2 * i][1], 'utf-8', 'replace')
                 header = data_str.strip()
-                header = header.replace('\r\n', '\t').encode('utf-8')
-                messages['<' + UUID + '.' +
-                         hashlib.sha1(header).hexdigest() + '>'] = num
+
+                # remove newlines inside Message-Id (a dumb Exchange trait)
+                header = BLANKS_RE.sub(' ', header)
+                try:
+                    msg_id = MSGID_RE.match(header).group(1)
+                    if msg_id not in messages.keys():
+                        # avoid adding dupes
+                        messages[msg_id] = num
+                except (IndexError, AttributeError):
+                    # Some messages may have no Message-Id, so we'll synthesise one
+                    # (this usually happens with Sent, Drafts and .Mac news)
+                    try:
+                        msg_typ, msg_data = server.fetch(
+                            str(num), '(BODY[HEADER.FIELDS (FROM TO CC DATE SUBJECT)])')
+                    except (imaplib.IMAP4.error, socket.error, socket.timeout) as e:
+                        print ("\nWARNING: Cannot fetch headers for message %d: %s" % (num, str(e)))
+                        spinner.spin()
+                        continue
+                    except Exception as e:
+                        print ("\nWARNING: Unexpected error fetching message %d: %s" % (num, str(e)))
+                        spinner.spin()
+                        continue
+
+                    if 'OK' != msg_typ:
+                        print ("\nWARNING: FETCH %d failed: %s" % (num, msg_data))
+                        spinner.spin()
+                        continue
+
+                    try:
+                        data_str = str(msg_data[0][1], 'utf-8', 'replace')
+                        header = data_str.strip()
+                        header = header.replace('\r\n', '\t').encode('utf-8')
+                        messages['<' + UUID + '.' +
+                                 hashlib.sha1(header).hexdigest() + '>'] = num
+                    except Exception as e:
+                        print ("\nWARNING: Cannot generate message ID for message %d: %s" % (num, str(e)))
+
+            except (IndexError, KeyError, TypeError) as e:
+                print ("\nWARNING: Cannot process message %d in %s: %s" % (num, foldername_quoted, str(e)))
+            except Exception as e:
+                print ("\nWARNING: Unexpected error processing message %d: %s" % (num, str(e)))
+
             spinner.spin()
+
+    except SkipFolderException:
+        # Re-raise SkipFolderException to allow caller to continue with next folder
+        raise
+    except Exception as e:
+        spinner.stop()
+        print ("\nERROR: Fatal error in scan_folder for %s: %s" % (foldername_quoted, str(e)))
+        raise SkipFolderException("Fatal error scanning folder: %s" % str(e))
     finally:
         spinner.stop()
         print (":",)
@@ -1220,12 +1550,13 @@ def get_config():
 
 
 def connect_and_login(config):
-    """Connects to the server and logs in.  Returns IMAP4 object."""
-    try:
-        assert(not (('keyfilename' in config) ^ ('certfilename' in config)))
-        if config['timeout']:
-            socket.setdefaulttimeout(config['timeout'])
+    """Connects to the server and logs in with retry logic. Returns IMAP4 object."""
+    assert(not (('keyfilename' in config) ^ ('certfilename' in config)))
+    if config['timeout']:
+        socket.setdefaulttimeout(config['timeout'])
 
+    def connect_operation():
+        """Connect and login to IMAP server"""
         if config['usessl'] and 'keyfilename' in config:
             print ("Connecting to '%s' TCP port %d," % (
                 config['server'], config['port']),)
@@ -1247,6 +1578,17 @@ def connect_and_login(config):
 
         print ("Logging in as '%s'" % (config['user']))
         server.login(config['user'], config['pass'])
+        return server
+
+    try:
+        # Retry connection with exponential backoff
+        server = retry_on_network_error(
+            connect_operation,
+            max_retries=3,
+            operation_name="Connect to %s" % config['server']
+        )
+        return server
+
     except socket.gaierror as e:
         (err, desc) = e
         print ("ERROR: problem looking up server '%s' (%s %s)" % (
@@ -1260,12 +1602,12 @@ def connect_and_login(config):
             print ("ERROR: error reading certificate chain file '%s'" % (
                 config['keyfilename']))
         else:
-            print ("ERROR: could not connect to '%s' (%s)" % (
+            print ("ERROR: could not connect to '%s' after retries (%s)" % (
                 config['server'], e))
-
         sys.exit(4)
-
-    return server
+    except imaplib.IMAP4.error as e:
+        print ("ERROR: IMAP error after retries: %s" % str(e))
+        sys.exit(4)
 
 
 
