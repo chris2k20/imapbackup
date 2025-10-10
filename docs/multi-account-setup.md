@@ -183,6 +183,8 @@ accounts:
 
 ## Directory Structure
 
+### Standard Structure
+
 Each account gets its own subdirectory under the base directory:
 
 ```
@@ -199,9 +201,100 @@ basedir/
     └── Drafts.mbox
 ```
 
+### Date-Based Structure
+
+Enable `use_date_folders: true` for automatic date organization:
+
+```
+basedir/
+├── personal-gmail/
+│   ├── 2025-10-10/
+│   │   ├── INBOX.mbox
+│   │   ├── Sent.mbox
+│   │   └── Important.mbox
+│   ├── 2025-10-11/
+│   │   ├── INBOX.mbox
+│   │   └── Sent.mbox
+│   └── 2025-10-12/
+│       └── INBOX.mbox
+└── work-office365/
+    └── 2025-10-10/
+        ├── INBOX.mbox
+        └── Sent.mbox
+```
+
+**Benefits of date-based folders:**
+- Easy to track backup history
+- Perfect for daily scheduled backups
+- Simple cleanup of old backups
+- Clear audit trail
+
+**Configure globally:**
+```yaml
+global:
+  use_date_folders: true
+  date_format: '%Y-%m-%d'  # Default: YYYY-MM-DD
+```
+
+**Or per-account:**
+```yaml
+accounts:
+  - name: archive-account
+    server: imap.example.com
+    user: user@example.com
+    pass: password
+    use_date_folders: true  # Only this account uses dates
+    date_format: '%Y-%m-%d'  # Custom format for this account
+```
+
+### Date Format Options
+
+Customize the date format using Python strftime patterns:
+
+| Format | Example | Use Case |
+|--------|---------|----------|
+| `%Y-%m-%d` | 2025-10-10 | Daily backups (default) |
+| `%Y/%m/%d` | 2025/10/10 | Hierarchical daily |
+| `%Y-%m-%d_%H-%M` | 2025-10-10_14-30 | Hourly backups |
+| `%Y/%m` | 2025/10 | Monthly archives |
+| `%Y-week-%U` | 2025-week-41 | Weekly backups |
+| `%Y/%B/%d` | 2025/October/10 | Human-readable dates |
+| `%Y-%m` | 2025-10 | Monthly snapshots |
+| `%Y-Q%q` | 2025-Q4 | Quarterly backups |
+
+**Example configurations:**
+
+```yaml
+# Daily backups
+- name: daily-account
+  server: imap.example.com
+  user: daily@example.com
+  pass: password
+  use_date_folders: true
+  date_format: '%Y-%m-%d'
+
+# Monthly archives
+- name: monthly-account
+  server: imap.example.com
+  user: monthly@example.com
+  pass: password
+  use_date_folders: true
+  date_format: '%Y/%m'
+
+# Hourly backups
+- name: critical-account
+  server: imap.example.com
+  user: critical@example.com
+  pass: password
+  use_date_folders: true
+  date_format: '%Y-%m-%d_%H-%M'
+```
+
 ---
 
 ## S3 Prefix Structure
+
+### Standard S3 Prefix
 
 S3 prefixes are automatically generated using the account name:
 
@@ -213,6 +306,25 @@ backups/personal-gmail/INBOX.mbox.gpg
 backups/work-office365/Sent.mbox.gpg
 backups/secure-proton/INBOX.mbox.gpg
 ```
+
+### Date-Based S3 Prefix
+
+When `use_date_folders: true` is enabled:
+
+```
+{global_prefix}/{account_name}/{YYYY-MM-DD}/filename.mbox.gpg
+
+Examples:
+backups/personal-gmail/2025-10-10/INBOX.mbox.gpg
+backups/personal-gmail/2025-10-11/INBOX.mbox.gpg
+backups/work-office365/2025-10-10/Sent.mbox.gpg
+```
+
+**S3 Lifecycle Benefits:**
+- Easy to set retention policies by date
+- Automatic expiration of old backups
+- Cost optimization with lifecycle rules
+- Perfect for compliance requirements
 
 ### Custom S3 Prefix
 
@@ -601,6 +713,23 @@ global:
     recipient: backup@example.com
     import_key: env:GPG_PUBLIC_KEY
 ```
+
+---
+
+## Date Format Reference
+
+For complete date format options, see [Python strftime reference](https://docs.python.org/3/library/datetime.html#strftime-and-strptime-format-codes).
+
+Common format codes:
+- `%Y` - 4-digit year (2025)
+- `%m` - Month as number (01-12)
+- `%d` - Day of month (01-31)
+- `%H` - Hour 24-hour (00-23)
+- `%M` - Minute (00-59)
+- `%B` - Full month name (October)
+- `%b` - Abbreviated month (Oct)
+- `%U` - Week number (00-53)
+- `%A` - Full weekday name (Monday)
 
 ---
 

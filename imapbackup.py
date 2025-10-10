@@ -827,7 +827,19 @@ def parse_account_config(account, global_config):
 
     # Base directory - create account subdirectory
     global_basedir = global_config.get('basedir', './backups')
-    config['basedir'] = os.path.join(global_basedir, account_name)
+
+    # Check if date-based folders are enabled
+    use_date_folders = account.get('use_date_folders', global_config.get('use_date_folders', False))
+
+    if use_date_folders:
+        # Get date format (default: YYYY-MM-DD)
+        date_format = account.get('date_format', global_config.get('date_format', '%Y-%m-%d'))
+        # Add date to the path: basedir/account_name/{date}/
+        date_str = time.strftime(date_format)
+        config['basedir'] = os.path.join(global_basedir, account_name, date_str)
+    else:
+        # Standard path: basedir/account_name/
+        config['basedir'] = os.path.join(global_basedir, account_name)
 
     # Folders
     if 'folders' in account:
@@ -862,14 +874,21 @@ def parse_account_config(account, global_config):
         config['s3_access_key'] = account_s3.get('access_key', global_s3.get('access_key', ''))
         config['s3_secret_key'] = account_s3.get('secret_key', global_s3.get('secret_key', ''))
 
-        # S3 prefix: use custom or build from global prefix + account name
+        # S3 prefix: use custom or build from global prefix + account name (+ date if enabled)
         if 's3_prefix' in account:
             config['s3_prefix'] = account['s3_prefix']
         elif 's3_prefix' in account_s3:
             config['s3_prefix'] = account_s3['prefix']
         else:
             global_prefix = global_s3.get('prefix', 'backups')
-            config['s3_prefix'] = '%s/%s' % (global_prefix.rstrip('/'), account_name)
+            if use_date_folders:
+                # Include date in S3 prefix: prefix/account_name/{date}
+                date_format = account.get('date_format', global_config.get('date_format', '%Y-%m-%d'))
+                date_str = time.strftime(date_format)
+                config['s3_prefix'] = '%s/%s/%s' % (global_prefix.rstrip('/'), account_name, date_str)
+            else:
+                # Standard prefix: prefix/account_name
+                config['s3_prefix'] = '%s/%s' % (global_prefix.rstrip('/'), account_name)
 
     # GPG configuration
     global_gpg = global_config.get('gpg', {})

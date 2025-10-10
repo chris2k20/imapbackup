@@ -6,6 +6,20 @@ global:
   # Base directory for all backups (each account gets a subdirectory)
   basedir: ./backups
 
+  # Use date-based folders (creates date subdirectories)
+  # When enabled: basedir/account_name/{date}/
+  # When disabled: basedir/account_name/
+  use_date_folders: false
+
+  # Date format for folder names (Python strftime format)
+  # Examples:
+  #   %Y-%m-%d          -> 2025-10-10 (default)
+  #   %Y/%m/%d          -> 2025/10/10
+  #   %Y-%m-%d_%H-%M    -> 2025-10-10_14-30
+  #   %Y-week-%U        -> 2025-week-41
+  #   %Y/%B/%d          -> 2025/October/10
+  date_format: '%Y-%m-%d'
+
   # Use SSL for all connections
   ssl: true
 
@@ -107,9 +121,45 @@ accounts:
     # Optional: custom S3 prefix
     s3_prefix: selfhosted/admin
 
+  # Account 5: Archive account with date-based folders (daily)
+  - name: archive-gmail
+    server: imap.gmail.com
+    user: archive@gmail.com
+    pass: env:ARCHIVE_PASSWORD
+
+    # Enable date-based folders for this account
+    # Creates: ./backups/archive-gmail/2025-10-10/
+    # S3 path: backups/archive-gmail/2025-10-10/
+    use_date_folders: true
+
+  # Account 6: Monthly archive with custom date format
+  - name: monthly-archive
+    server: imap.example.com
+    user: monthly@example.com
+    pass: env:MONTHLY_PASSWORD
+
+    # Custom date format for monthly backups
+    # Creates: ./backups/monthly-archive/2025/10/
+    use_date_folders: true
+    date_format: '%Y/%m'
+
+  # Account 7: Hourly backups with timestamp
+  - name: critical-account
+    server: imap.example.com
+    user: critical@example.com
+    pass: env:CRITICAL_PASSWORD
+
+    # Include time in backup folder
+    # Creates: ./backups/critical-account/2025-10-10_14-30/
+    use_date_folders: true
+    date_format: '%Y-%m-%d_%H-%M'
+
 # Notes:
 # - Each account creates a subdirectory: {basedir}/{account_name}/
+# - With date folders enabled: {basedir}/{account_name}/YYYY-MM-DD/
 # - S3 prefix becomes: {global_prefix}/{account_name}/ (or custom if specified)
+# - With date folders: {global_prefix}/{account_name}/YYYY-MM-DD/
 # - If both 'folders' and 'exclude_folders' are set, only 'folders' is used
 # - Passwords starting with '@' read from file, 'env:' reads from environment
 # - Account settings override global settings
+# - Date-based folders are useful for daily backups and historical archives
