@@ -10,6 +10,7 @@ Complete guide for backing up your IMAP emails using the imapbackup tool.
 - [Cloud Backups](#cloud-backups)
 - [Encrypted Backups](#encrypted-backups)
 - [Best Practices](#best-practices)
+- [Kubernetes](#kubernetes)
 
 ## Basic Backups
 
@@ -229,6 +230,286 @@ docker run --rm \
   --gpg-encrypt \
   --gpg-recipient=backup@example.com \
   && rm /data/*.mbox
+```
+
+## Kubernetes
+
+Run scheduled backups and ad-hoc restores in Kubernetes using the Docker image. The container entrypoint is `/app/imapbackup38.py`, so you pass flags as container args.
+
+### Prerequisites
+
+- Create a namespace (example: `email-backups`).
+- Create a Secret with your IMAP password (and optional S3 credentials).
+- Optionally create a PersistentVolumeClaim (PVC) to store mbox files.
+
+Example secrets and PVC:
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: email-backups
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: imapbackup-secrets
+  namespace: email-backups
+type: Opaque
+stringData:
+  imap_password: "your_imap_password"
+  # Optional if using S3 uploads from the CronJob/Job
+  s3_access_key: "REPLACE_ME"
+  s3_secret_key: "REPLACE_ME"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: imapbackup-pvc
+  namespace: email-backups
+spec:
+  accessModes: [ "ReadWriteOnce" ]
+  resources:
+    requests:
+      storage: 20Gi
+```
+
+### Daily backup CronJob (PVC storage)
+
+Backs up to a mounted PVC at `/data` every night at 03:00. Uses SSL and disables the spinner for cleaner logs.
+
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: imapbackup-daily
+  namespace: email-backups
+spec:
+  schedule: "0 3 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            fsGroup: 10001
+          containers:
+            - name: imapbackup
+              image: user2k20/imapbackup:latest
+              imagePullPolicy: IfNotPresent
+              args:
+                - -s
+                - imap.example.com
+                - -u
+                - user@example.com
+                - -p
+                - @/secrets/password
+                - -e
+                - --nospinner
+                - -d
+                - /data
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+                - name: secrets
+                  mountPath: /secrets
+                  readOnly: true
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: imapbackup-pvc
+            - name: secrets
+              secret:
+                secretName: imapbackup-secrets
+                items:
+                  - key: imap_password
+                    path: password
+```
+
+### Daily backup CronJob (S3 upload, no PVC)
+
+Uploads backups directly to S3-compatible storage. Uses `sh -c` to pass secret values as CLI flags.
+
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: imapbackup-daily-s3
+  namespace: email-backups
+spec:
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+          containers:
+            - name: imapbackup
+              image: user2k20/imapbackup:latest
+              imagePullPolicy: IfNotPresent
+              command: ["sh","-c"]
+              args:
+                - >-
+                  /app/imapbackup38.py
+                  -s imap.example.com -u user@example.com -p @/secrets/password -e --nospinner
+                  --s3-upload --s3-endpoint=https://s3.example.com --s3-bucket=email-backups
+                  --s3-access-key "$S3_ACCESS_KEY" --s3-secret-key "$S3_SECRET_KEY"
+                  --s3-prefix "daily/$(date +%F)/" -d /data
+              env:
+                - name: S3_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: imapbackup-secrets
+                      key: s3_access_key
+                - name: S3_SECRET_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: imapbackup-secrets
+                      key: s3_secret_key
+              volumeMounts:
+                - name: secrets
+                  mountPath: /secrets
+                  readOnly: true
+                - name: data
+                  emptyDir: {}
+          volumes:
+            - name: secrets
+              secret:
+                secretName: imapbackup-secrets
+                items:
+                  - key: imap_password
+                    path: password
+            - name: data
+              emptyDir: {}
+```
+
+### Restore Job (from PVC)
+
+Restores previously saved mbox files from a PVC to the IMAP server using restore mode (`-r`).
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: imaprestore-pvc
+  namespace: email-backups
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 10001
+      containers:
+        - name: imaprestore
+          image: user2k20/imapbackup:latest
+          args:
+            - -r
+            - -s
+            - imap.example.com
+            - -u
+            - user@example.com
+            - -p
+            - @/secrets/password
+            - -e
+            - --nospinner
+            - -d
+            - /data
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: secrets
+              mountPath: /secrets
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: imapbackup-pvc
+        - name: secrets
+          secret:
+            secretName: imapbackup-secrets
+            items:
+              - key: imap_password
+                path: password
+```
+
+### Restore Job (download from S3, then restore)
+
+Uses an initContainer to download mbox files from S3 into `/data` before running restore.
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: imaprestore-s3
+  namespace: email-backups
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+      initContainers:
+        - name: fetch-from-s3
+          image: user2k20/imapbackup:latest
+          command: ["sh","-c"]
+          args:
+            - >-
+              AWS_ACCESS_KEY_ID="$S3_ACCESS_KEY" AWS_SECRET_ACCESS_KEY="$S3_SECRET_KEY"
+              aws s3 cp s3://email-backups/restore-set/ /data --recursive --endpoint-url https://s3.example.com
+          env:
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: imapbackup-secrets
+                  key: s3_access_key
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: imapbackup-secrets
+                  key: s3_secret_key
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      containers:
+        - name: imaprestore
+          image: user2k20/imapbackup:latest
+          args:
+            - -r
+            - -s
+            - imap.example.com
+            - -u
+            - user@example.com
+            - -p
+            - @/secrets/password
+            - -e
+            - --nospinner
+            - -d
+            - /data
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: secrets
+              mountPath: /secrets
+              readOnly: true
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: secrets
+          secret:
+            secretName: imapbackup-secrets
+            items:
+              - key: imap_password
+                path: password
 ```
 
 ## Backup Strategies
