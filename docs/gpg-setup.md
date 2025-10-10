@@ -2,6 +2,8 @@
 
 Complete guide for setting up GPG encryption for secure email backups.
 
+> **💡 New Feature**: For Docker users, check out the [GPG Key Import Guide](gpg-key-import.md) for a simpler way to use GPG encryption without mounting keyrings. You can now import public keys from files, URLs, or environment variables using `--gpg-import-key`.
+
 ## Table of Contents
 
 - [Why Use GPG Encryption](#why-use-gpg-encryption)
@@ -208,7 +210,64 @@ gpg --list-secret-keys
 
 ## Using GPG with Docker
 
-### Share GPG Keyring with Container
+### Method 1: Flexible Key Import (Recommended)
+
+**No keyring mount needed** - Import public keys from files, URLs, or environment variables:
+
+```bash
+# From URL (great for automation)
+docker run --rm \
+  -v $(pwd)/backups:/data \
+  user2k20/imapbackup \
+  -s imap.example.com \
+  -u user@example.com \
+  -e \
+  --s3-upload \
+  --s3-endpoint=https://s3.hetzner.cloud \
+  --s3-bucket=encrypted-backups \
+  --s3-access-key=$S3_KEY \
+  --s3-secret-key=$S3_SECRET \
+  --gpg-encrypt \
+  --gpg-recipient=backup@example.com \
+  --gpg-import-key=https://example.com/keys/backup-public.asc
+
+# From environment variable
+export GPG_PUBLIC_KEY=$(cat ~/keys/backup-public.asc)
+docker run --rm \
+  -v $(pwd)/backups:/data \
+  -e GPG_PUBLIC_KEY \
+  user2k20/imapbackup \
+  -s imap.example.com \
+  -u user@example.com \
+  -e \
+  --gpg-encrypt \
+  --gpg-recipient=backup@example.com \
+  --gpg-import-key=env:GPG_PUBLIC_KEY
+
+# From file in Docker image
+docker run --rm \
+  -v $(pwd)/backups:/data \
+  -v $(pwd)/backup-public.asc:/etc/gpg-key.asc:ro \
+  user2k20/imapbackup \
+  -s imap.example.com \
+  -u user@example.com \
+  -e \
+  --gpg-encrypt \
+  --gpg-recipient=backup@example.com \
+  --gpg-import-key=/etc/gpg-key.asc
+```
+
+**Benefits**:
+- No GPG keyring management
+- Public keys are safe to distribute
+- Perfect for containers and automation
+- Works with Kubernetes ConfigMaps
+
+See the [GPG Key Import Guide](gpg-key-import.md) for complete examples and workflows.
+
+### Method 2: Share GPG Keyring with Container (Traditional)
+
+Mount your GPG directory (useful when you have existing keyrings):
 
 ```bash
 # Mount GPG directory (read-only recommended)
@@ -227,6 +286,8 @@ docker run --rm \
   --gpg-encrypt \
   --gpg-recipient=backup@example.com
 ```
+
+**Note**: This method requires managing GPG permissions and is needed for **restore/decryption** (which requires the private key).
 
 ### Fix GPG Permissions
 

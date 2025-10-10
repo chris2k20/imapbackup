@@ -184,7 +184,37 @@ docker run --rm \
 
 ## Encrypted Backups
 
-### Backup with GPG Encryption
+### Backup with GPG Encryption (Public Key Auto-Import)
+
+**Recommended**: Use the flexible key import feature - no GPG keyring mount needed for encryption:
+
+```bash
+docker run --rm \
+  -v $(pwd)/backups:/data \
+  user2k20/imapbackup \
+  -s imap.example.com \
+  -u user@example.com \
+  -e \
+  --s3-upload \
+  --s3-endpoint=https://s3.hetzner.cloud \
+  --s3-bucket=secure-backups \
+  --s3-access-key=$S3_KEY \
+  --s3-secret-key=$S3_SECRET \
+  --gpg-encrypt \
+  --gpg-recipient=backup@example.com \
+  --gpg-import-key=https://example.com/keys/backup-public.asc
+```
+
+The `--gpg-import-key` option supports:
+- **File paths**: `--gpg-import-key=/path/to/key.asc`
+- **URLs**: `--gpg-import-key=https://example.com/public-key.asc`
+- **Environment variables**: `--gpg-import-key=env:GPG_PUBLIC_KEY`
+
+For complete examples and workflows, see [GPG Key Import Guide](gpg-key-import.md).
+
+### Backup with GPG Encryption (Traditional Method)
+
+If you prefer mounting your GPG keyring:
 
 ```bash
 docker run --rm \

@@ -67,6 +67,7 @@ python3 imapbackup.py \
 4. **[Restore Guide](restore-guide.md)** - How to restore emails from backups
 5. **[S3 Configuration](s3-setup.md)** - Setting up S3 storage (MinIO, Hetzner, AWS)
 6. **[GPG Encryption Guide](gpg-setup.md)** - Encrypting your backups
+7. **[GPG Key Import Guide](gpg-key-import.md)** - Flexible GPG key import (files, URLs, environment variables)
 
 ## Common Use Cases
 
@@ -80,9 +81,30 @@ Use cron to schedule daily backups:
   -s imap.example.com -u user@example.com -p @/root/.imap_password -e
 ```
 
-### Backup and Upload to S3 with Encryption
+### Backup and Upload to S3 with Encryption (Easy Method)
 
 ```bash
+# Using flexible key import - no GPG keyring mount needed
+docker run --rm \
+  -v $(pwd)/backups:/data \
+  user2k20/imapbackup \
+  -s imap.example.com -u user@example.com -e \
+  --s3-upload \
+  --s3-endpoint=https://s3.eu-central-1.hetzner.cloud \
+  --s3-bucket=email-backups \
+  --s3-access-key=$S3_KEY \
+  --s3-secret-key=$S3_SECRET \
+  --gpg-encrypt \
+  --gpg-recipient=backup@example.com \
+  --gpg-import-key=https://example.com/keys/backup-public.asc
+```
+
+See [GPG Key Import Guide](gpg-key-import.md) for more examples including environment variables and file paths.
+
+### Backup and Upload to S3 with Encryption (Traditional Method)
+
+```bash
+# Using mounted GPG keyring
 docker run --rm \
   -v $(pwd)/backups:/data \
   -v $(pwd)/.gnupg:/root/.gnupg \
@@ -149,6 +171,10 @@ docker run --rm \
 
 - `--gpg-encrypt` - Enable GPG encryption/decryption
 - `--gpg-recipient=EMAIL` - GPG key ID or email
+- `--gpg-import-key=SOURCE` - Import GPG public key from:
+  - File path: `/path/to/key.asc`
+  - URL: `https://example.com/key.asc`
+  - Environment variable: `env:GPG_PUBLIC_KEY`
 
 ## Requirements
 

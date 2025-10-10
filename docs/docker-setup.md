@@ -49,13 +49,25 @@ Example:
 
 ### `/root/.gnupg` - GPG Keyring (Optional)
 
-Required only if using GPG encryption:
+**Method 1**: Use the new `--gpg-import-key` option (no mount needed for encryption):
+
+```bash
+# No GPG volume mount needed when importing public keys
+docker run --rm -v $(pwd)/backups:/data user2k20/imapbackup \
+  -s imap.example.com -u user@example.com -e \
+  --gpg-encrypt --gpg-recipient=backup@example.com \
+  --gpg-import-key=https://example.com/public-key.asc
+```
+
+See [GPG Key Import Guide](gpg-key-import.md) for details.
+
+**Method 2**: Mount GPG keyring (traditional, needed for restore/decryption):
 
 ```bash
 -v ~/.gnupg:/root/.gnupg:ro
 ```
 
-Note: Use `:ro` (read-only) for security if you only need decryption.
+Note: Use `:ro` (read-only) for security. This is required for **restore operations** which need the private key.
 
 ## Environment Variables
 
@@ -153,7 +165,28 @@ docker run --rm \
   --s3-secret-key=YOUR_SECRET_KEY
 ```
 
-### Backup with S3 and GPG Encryption
+### Backup with S3 and GPG Encryption (Flexible Key Import)
+
+**Recommended**: Use `--gpg-import-key` for easier setup:
+
+```bash
+docker run --rm \
+  -v $(pwd)/backups:/data \
+  user2k20/imapbackup \
+  -s imap.example.com \
+  -u user@example.com \
+  -e \
+  --s3-upload \
+  --s3-endpoint=https://play.min.io:9000 \
+  --s3-bucket=encrypted-backups \
+  --s3-access-key=$MINIO_ACCESS_KEY \
+  --s3-secret-key=$MINIO_SECRET_KEY \
+  --gpg-encrypt \
+  --gpg-recipient=backup@example.com \
+  --gpg-import-key=https://example.com/keys/backup-public.asc
+```
+
+**Traditional method** (mount GPG keyring):
 
 ```bash
 docker run --rm \
