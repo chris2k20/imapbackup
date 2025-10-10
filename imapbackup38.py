@@ -165,6 +165,84 @@ def encrypt_file_gpg(input_file, recipient):
         raise Exception("GPG not found. Please install GPG (gnupg) to use encryption.")
 
 
+def decrypt_file_gpg(input_file):
+    """Decrypt a GPG-encrypted file and return the path to decrypted file"""
+    # Remove .gpg extension for output file
+    if input_file.endswith('.gpg'):
+        output_file = input_file[:-4]
+    else:
+        output_file = input_file + '.decrypted'
+
+    try:
+        # Run GPG decryption
+        cmd = [
+            'gpg',
+            '--batch',
+            '--yes',
+            '--decrypt',
+            '--output', output_file,
+            input_file
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+
+        if os.path.exists(output_file):
+            print ("  Decrypted: %s" % os.path.basename(input_file))
+            return output_file
+        else:
+            raise Exception("GPG decryption failed: output file not created")
+
+    except subprocess.CalledProcessError as e:
+        raise Exception("GPG decryption failed: %s\n%s" % (e.stderr, e.stdout))
+    except FileNotFoundError:
+        raise Exception("GPG not found. Please install GPG (gnupg) to use decryption.")
+
+
+def download_from_s3(filename, config, destination_dir):
+    """Download a file from S3-compatible storage using AWS CLI"""
+    try:
+        # Check if aws CLI is available
+        try:
+            subprocess.run(['aws', '--version'], capture_output=True, check=True)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            raise Exception("AWS CLI not found. Please install awscli to use S3 download.")
+
+        # Prepare S3 object key
+        s3_prefix = config.get('s3_prefix', '').rstrip('/')
+        if s3_prefix:
+            s3_key = s3_prefix + '/' + filename
+        else:
+            s3_key = filename
+
+        s3_uri = 's3://%s/%s' % (config['s3_bucket'], s3_key)
+
+        # Destination path
+        destination_path = os.path.join(destination_dir, filename)
+
+        # Set up environment variables for AWS credentials
+        env = os.environ.copy()
+        env['AWS_ACCESS_KEY_ID'] = config['s3_access_key']
+        env['AWS_SECRET_ACCESS_KEY'] = config['s3_secret_key']
+
+        # Build AWS CLI command
+        cmd = [
+            'aws', 's3', 'cp',
+            s3_uri,
+            destination_path,
+            '--endpoint-url', config['s3_endpoint']
+        ]
+
+        print ("  Downloading from S3: %s" % s3_uri)
+
+        result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=True)
+
+        print ("  Download complete")
+        return destination_path
+
+    except subprocess.CalledProcessError as e:
+        raise Exception("S3 download failed: %s\n%s" % (e.stderr, e.stdout))
+
+
 def upload_to_s3(file_path, config):
     """Upload a file to S3-compatible storage using AWS CLI"""
     try:
@@ -575,15 +653,19 @@ def print_usage():
     print (" --nospinner                   Disable spinner (makes output log-friendly)")
     print (" --icloud                      Enable iCloud compatibility mode (for iCloud mailserver)")
     print ("")
-    print ("S3 Upload Options:")
-    print (" --s3-upload                   Upload mbox files to S3-compatible storage after backup")
+    print ("S3 Storage Options:")
+    print (" --s3-upload                   Enable S3 storage integration")
+    print ("                               Backup mode: Upload mbox files to S3 after backup")
+    print ("                               Restore mode: Download mbox files from S3 before restore")
     print (" --s3-endpoint=URL             S3 endpoint URL (e.g., https://s3.eu-central-1.wasabisys.com)")
     print (" --s3-bucket=BUCKET            S3 bucket name")
     print (" --s3-access-key=KEY           S3 access key ID")
     print (" --s3-secret-key=KEY           S3 secret access key")
     print (" --s3-prefix=PREFIX            Optional prefix for S3 object keys (e.g., backups/imap/)")
-    print (" --gpg-encrypt                 Encrypt files with GPG before uploading to S3")
-    print (" --gpg-recipient=EMAIL         GPG recipient email/key ID for encryption")
+    print (" --gpg-encrypt                 Encrypt/decrypt files with GPG when using S3")
+    print ("                               Backup mode: Encrypts before upload")
+    print ("                               Restore mode: Decrypts after download")
+    print (" --gpg-recipient=EMAIL         GPG recipient email/key ID (required for encryption)")
     sys.exit(2)
 
 
@@ -883,6 +965,48 @@ def main():
         # for n, name in enumerate(names): # *DEBUG
         #   print n, name # *DEBUG
         create_folder_structure(names,basedir)
+
+        # S3 Restore: Download and decrypt files before restore
+        if config.get('restore') and config.get('s3_upload'):
+            print ("\nDownloading files from S3 for restore...")
+
+            temp_files_to_cleanup = []
+
+            try:
+                for foldername, filename in names:
+                    if foldername in exclude_folders:
+                        continue
+
+                    # Determine the filename to download (might be encrypted)
+                    download_filename = filename
+                    if config.get('gpg_encrypt'):
+                        download_filename = filename + '.gpg'
+
+                    print ("Downloading: %s" % download_filename)
+                    try:
+                        # Download from S3
+                        downloaded_file = download_from_s3(download_filename, config, basedir)
+
+                        # Decrypt if needed
+                        if config.get('gpg_encrypt'):
+                            print ("Decrypting: %s" % download_filename)
+                            try:
+                                decrypted_file = decrypt_file_gpg(downloaded_file)
+                                # Remove the encrypted file after decryption
+                                os.remove(downloaded_file)
+                                print ("  Decryption complete")
+                            except Exception as e:
+                                print ("  ERROR: %s" % str(e))
+                                continue
+
+                    except Exception as e:
+                        print ("  ERROR: %s" % str(e))
+                        continue
+
+                print ("\nS3 download complete\n")
+
+            except Exception as e:
+                print ("ERROR during S3 download: %s" % str(e))
 
         for name_pair in names:
             try:
