@@ -1,0 +1,9 @@
+# Exclude everything by default
+*
+
+# Allow only what the image actually needs
+!imapbackup38.py
+!Dockerfile
+!.dockerignore
+!LICENSE
+!README.md
