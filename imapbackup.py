@@ -1885,7 +1885,13 @@ def process_account(config):
     # Import GPG key if specified (for encryption)
     if config.get('gpg_import_key') and config.get('gpg_encrypt'):
         print ("\nImporting GPG public key...")
-        import_gpg_key(config['gpg_import_key'])
+        key_imported = import_gpg_key(config['gpg_import_key'])
+        if not key_imported:
+            print ("\nERROR: Failed to import GPG key for account '%s'" % config.get('account_name', 'unknown'))
+            print ("ERROR: Cannot proceed with GPG encryption enabled but key import failed")
+            print ("ERROR: Aborting backup to prevent unencrypted data from being created")
+            server.logout()
+            return False
 
     # S3 Restore: Download and decrypt files before restore
     if config.get('restore') and config.get('s3_upload'):
