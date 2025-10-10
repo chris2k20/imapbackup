@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/chris2k20/imapbackup/compare/v1.2.0...v1.3.0) (2025-10-10)
+
+
+### Features
+
+* disable automatic key retrieval during GPG encryption ([ad827c6](https://github.com/chris2k20/imapbackup/commit/ad827c6448f22d343186b728338127289c602f0c))
+
 ## [1.2.0](https://github.com/chris2k20/imapbackup/compare/v1.1.1...v1.2.0) (2025-10-10)
 
 
