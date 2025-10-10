@@ -1,0 +1,22 @@
+# Changelog
+
+## 1.0.0 (2025-10-10)
+
+
+### Features
+
+* add auto-detection of config.yaml when running without arguments ([38cfbb4](https://github.com/chris2k20/imapbackup/commit/38cfbb4204e3b26fe3af24dfe56c5ece1a0575c3))
+* add backup listing, selective account filtering, and date-based restore capabilities ([030d8b4](https://github.com/chris2k20/imapbackup/commit/030d8b4622d6df61bc49365b4b8b51af647acb94))
+* add date-based folder organization with configurable date formats ([98fb7f1](https://github.com/chris2k20/imapbackup/commit/98fb7f16f054e502de5f641dfb1009e38e6822f1))
+* add GitHub Pages deployment with Jekyll and SEO optimization ([734d477](https://github.com/chris2k20/imapbackup/commit/734d477f0dd30aa31462c86e21f4d2c0ac24eff5))
+* add multi-account backup support with YAML configuration and GitHub Pages setup ([9593c81](https://github.com/chris2k20/imapbackup/commit/9593c815fed0cb91d9f664bee8560fd4e0dd1cd4))
+* **Docker:** add Docker support with multi-arch builds and automated publishing workflow ([6c67b4d](https://github.com/chris2k20/imapbackup/commit/6c67b4d3808bd832aa027373b35ae2beda13c2b3))
+* **restore:** add restore mode to upload messages from mbox files to IMAP server ([c0aa276](https://github.com/chris2k20/imapbackup/commit/c0aa276467f34ff550a5ea8e2f121f8d24324f8a))
+* **s3-gpg-restore:** add S3 download and GPG decryption support for IMAP restore operations ([5293031](https://github.com/chris2k20/imapbackup/commit/5293031b728deeaefe58e46a970595afb8920910))
+* **s3-gpg:** add GPG encryption and S3 upload support for IMAP backups ([8ffb19e](https://github.com/chris2k20/imapbackup/commit/8ffb19edbd6fd512ee476d0c9b1fd5e699597880))
+
+
+### Bug Fixes
+
+* 19 ([fb85944](https://github.com/chris2k20/imapbackup/commit/fb8594432f46defca49411215d7f0f0228fb4b03))
+* 2 ([82e6071](https://github.com/chris2k20/imapbackup/commit/82e6071fb3733ff1540dc8595b4596fc16141ec3))
