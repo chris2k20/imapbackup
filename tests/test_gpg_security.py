@@ -188,6 +188,56 @@ class TestEncryptionFailsafe:
         with pytest.raises(Exception):
             imapbackup.encrypt_file_gpg("/tmp/nonexistent-file-xyz-123.txt", "test@example.com")
 
+    @patch('subprocess.run')
+    @patch('os.path.exists')
+    def test_encrypt_file_uses_no_auto_key_retrieve_flag(self, mock_exists, mock_subprocess, temp_dir):
+        """Test that encrypt_file_gpg uses --no-auto-key-retrieve flag to prevent WKD lookups"""
+        import os
+
+        # Create a test file
+        test_file = os.path.join(temp_dir, "test.txt")
+        with open(test_file, 'w') as f:
+            f.write("test data")
+
+        # Mock os.path.exists to return True for the output file
+        def exists_side_effect(path):
+            if path.endswith('.gpg'):
+                return True
+            return os.path.exists(path)
+        mock_exists.side_effect = exists_side_effect
+
+        # Mock subprocess.run to succeed
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_subprocess.return_value = mock_result
+
+        # Call encrypt_file_gpg
+        try:
+            result = imapbackup.encrypt_file_gpg(test_file, "test@example.com")
+        except:
+            pass  # We're only interested in the subprocess call, not the result
+
+        # Verify subprocess.run was called
+        assert mock_subprocess.called
+
+        # Get the command that was passed to subprocess.run
+        call_args = mock_subprocess.call_args
+        cmd = call_args[0][0]  # First positional argument is the command list
+
+        # Verify --no-auto-key-retrieve flag is present
+        assert '--no-auto-key-retrieve' in cmd, \
+            "GPG command must include --no-auto-key-retrieve flag to prevent WKD auto-retrieval"
+
+        # Verify other essential flags are present
+        assert 'gpg' in cmd[0]
+        assert '--batch' in cmd
+        assert '--yes' in cmd
+        assert '--trust-model' in cmd
+        assert 'always' in cmd
+        assert '--encrypt' in cmd
+        assert '--recipient' in cmd
+        assert 'test@example.com' in cmd
+
 
 @pytest.mark.unit
 class TestS3EncryptionFailures:
