@@ -132,6 +132,65 @@ def string_from_file(value):
         return content.read().strip()
 
 
+def upload_messages(server, foldername, filename, messages_to_upload, nospinner, basedir):
+    """Upload messages from mbox file to IMAP folder"""
+
+    fullname = os.path.join(basedir, filename)
+
+    # Check if file exists
+    if not os.path.exists(fullname):
+        print ("File %s: not found, skipping" % filename)
+        return
+
+    # nothing to do
+    if not len(messages_to_upload):
+        print ("Messages to upload: 0")
+        return
+
+    spinner = Spinner("Uploading %s messages to %s" % (len(messages_to_upload), foldername),
+                      nospinner)
+
+    # Open the mbox file
+    mbox = mailbox.mbox(fullname)
+
+    uploaded = 0
+    total_size = 0
+
+    # Iterate through messages in the mbox file
+    for message in mbox:
+        # Get the Message-Id
+        msg_id = message.get('Message-Id', '').strip()
+
+        # Check if this message needs to be uploaded
+        if msg_id in messages_to_upload:
+            # Convert message to string (bytes)
+            msg_bytes = bytes(str(message), 'utf-8')
+
+            # Upload to IMAP server
+            # Use APPEND command to add message to folder
+            try:
+                # Select the folder for append (need to ensure it exists)
+                foldername_quoted = '"{}"'.format(foldername)
+
+                # APPEND the message
+                result = server.append(foldername_quoted, None, None, msg_bytes)
+
+                if result[0] == 'OK':
+                    uploaded += 1
+                    total_size += len(msg_bytes)
+                else:
+                    print ("\nWarning: Failed to upload message with ID: %s" % msg_id)
+
+            except Exception as e:
+                print ("\nError uploading message %s: %s" % (msg_id, str(e)))
+
+            spinner.spin()
+
+    mbox.close()
+    spinner.stop()
+    print (": %s uploaded, %s total" % (uploaded, pretty_byte_count(total_size)))
+
+
 def download_messages(server, filename, messages, overwrite, nospinner, thunderbird, basedir, icloud):
     """Download messages from folder and append to mailbox"""
 
@@ -421,6 +480,8 @@ def print_usage():
     print (" -d DIR --mbox-dir=DIR         Write mbox files to directory. (defaults to cwd)")
     print (" -a --append-to-mboxes         Append new messages to mbox files. (default)")
     print (" -y --yes-overwrite-mboxes     Overwite existing mbox files instead of appending.")
+    print (" -r --restore                  Restore mode: upload mbox files to IMAP server.")
+    print ("                               Will not upload messages that already exist on server.")
     print (" -f FOLDERS --folders=FOLDERS  Specify which folders to include. Comma separated list.")
     print (" --exclude-folders=FOLDERS     Specify which folders to exclude. Comma separated list.")
     print ("                               You cannot use both --folders and --exclude-folders.")
@@ -444,8 +505,8 @@ def process_cline():
     """Uses getopt to process command line, returns (config, warnings, errors)"""
     # read command line
     try:
-        short_args = "aynekt:c:s:u:p:f:d:"
-        long_args = ["append-to-mboxes", "yes-overwrite-mboxes",
+        short_args = "ayrnekt:c:s:u:p:f:d:"
+        long_args = ["append-to-mboxes", "yes-overwrite-mboxes", "restore",
                      "ssl", "timeout", "keyfile=", "certfile=", "server=", "user=", "pass=",
                      "folders=", "exclude-folders=", "thunderbird", "nospinner", "mbox-dir=", "icloud"]
         opts, extraargs = getopt.getopt(sys.argv[1:], short_args, long_args)
@@ -455,7 +516,7 @@ def process_cline():
     warnings = []
     config = {'overwrite': False, 'usessl': False,
               'thunderbird': False, 'nospinner': False,
-              'basedir': ".", 'icloud': False}
+              'basedir': ".", 'icloud': False, 'restore': False}
     errors = []
 
     # empty command line
@@ -471,6 +532,8 @@ def process_cline():
         elif option in ("-y", "--yes-overwrite-mboxes"):
             warnings.append("Existing mbox files will be overwritten!")
             config["overwrite"] = True
+        elif option in ("-r", "--restore"):
+            config['restore'] = True
         elif option in ("-e", "--ssl"):
             config['usessl'] = True
         elif option in ("-k", "--keyfile"):
@@ -706,18 +769,34 @@ def main():
                     print(f'Excluding folder "{foldername}"')
                     continue
 
-                fol_messages = scan_folder(
-                    server, foldername, config['nospinner'])
-                fil_messages = scan_file(filename, config['overwrite'], config['nospinner'], basedir)
-                new_messages = {}
-                for msg_id in fol_messages.keys():
-                    if msg_id not in fil_messages:
-                        new_messages[msg_id] = fol_messages[msg_id]
+                if config['restore']:
+                    # RESTORE MODE: Upload messages from mbox files to IMAP server
+                    fol_messages = scan_folder(
+                        server, foldername, config['nospinner'])
+                    fil_messages = scan_file(filename, False, config['nospinner'], basedir)
 
-                # for f in new_messages:
-                #  print "%s : %s" % (f, new_messages[f])
+                    # Find messages that are in file but not on server
+                    messages_to_upload = {}
+                    for msg_id in fil_messages.keys():
+                        if msg_id not in fol_messages:
+                            messages_to_upload[msg_id] = msg_id
 
-                download_messages(server, filename, new_messages, config['overwrite'], config['nospinner'], config['thunderbird'], basedir, config['icloud'])
+                    upload_messages(server, foldername, filename, messages_to_upload,
+                                  config['nospinner'], basedir)
+                else:
+                    # BACKUP MODE: Download messages from IMAP server to mbox files
+                    fol_messages = scan_folder(
+                        server, foldername, config['nospinner'])
+                    fil_messages = scan_file(filename, config['overwrite'], config['nospinner'], basedir)
+                    new_messages = {}
+                    for msg_id in fol_messages.keys():
+                        if msg_id not in fil_messages:
+                            new_messages[msg_id] = fol_messages[msg_id]
+
+                    # for f in new_messages:
+                    #  print "%s : %s" % (f, new_messages[f])
+
+                    download_messages(server, filename, new_messages, config['overwrite'], config['nospinner'], config['thunderbird'], basedir, config['icloud'])
 
             except SkipFolderException as e:
                 print (e)
