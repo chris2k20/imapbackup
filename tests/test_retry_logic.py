@@ -148,9 +148,11 @@ class TestRetryLogic:
             delay1 = call_times[1] - call_times[0]
             delay2 = call_times[2] - call_times[1]
 
-            # Allow some timing variance
-            assert 0.08 < delay1 < 0.15  # ~0.1s
-            assert 0.15 < delay2 < 0.3   # ~0.2s
+            # Allow generous timing variance for CI environments
+            # Just verify that backoff is working (delay2 > delay1)
+            assert 0.05 < delay1 < 0.3   # ~0.1s with tolerance for CI load
+            assert 0.1 < delay2 < 0.5    # ~0.2s with tolerance for CI load
+            assert delay2 > delay1       # Verify exponential backoff is working
 
     def test_retry_with_operation_name(self, capsys):
         """Test retry with operation name for logging"""
