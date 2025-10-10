@@ -1981,6 +1981,7 @@ def process_account(config):
 
         files_to_upload = []
         temp_files_to_cleanup = []
+        encryption_failed = False
 
         try:
             # Collect all mbox files
@@ -2001,9 +2002,19 @@ def process_account(config):
                             temp_files_to_cleanup.append(encrypted_file)
                         except Exception as e:
                             print ("  ERROR: %s" % str(e))
+                            encryption_failed = True
                             continue
 
                     files_to_upload.append(file_to_upload)
+
+            # Check if any encryption failures occurred
+            if encryption_failed and config.get('gpg_encrypt'):
+                print ("\n" + "=" * 70)
+                print ("ERROR: GPG encryption failed for one or more files")
+                print ("ERROR: Cannot upload to S3 with encryption failures")
+                print ("ERROR: Aborting to prevent unencrypted data exposure")
+                print ("=" * 70)
+                return False  # Mark account as failed
 
             # Upload files to S3
             print ("\nUploading %d file(s) to S3..." % len(files_to_upload))
