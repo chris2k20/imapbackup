@@ -35,9 +35,22 @@ docker run --rm -v $(pwd)/backups:/data \
 ### Using Python Directly
 
 ```bash
-# Install dependencies
-pip install awscli  # For S3 support
-apt install gnupg   # For GPG encryption
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install Python dependencies
+pip install -r requirements.txt
+
+# Install system dependencies
+# Ubuntu/Debian:
+sudo apt install gnupg
+
+# RHEL/CentOS:
+sudo yum install gnupg
+
+# macOS:
+brew install gnupg
 
 # Run backup
 python3 imapbackup38.py \
@@ -49,10 +62,11 @@ python3 imapbackup38.py \
 ## Documentation Index
 
 1. **[Docker Setup Guide](docker-setup.md)** - Using the Docker image
-2. **[Backup Guide](backup-guide.md)** - How to backup your emails
-3. **[Restore Guide](restore-guide.md)** - How to restore emails from backups
-4. **[S3 Configuration](s3-setup.md)** - Setting up S3 storage (MinIO, Hetzner, AWS)
-5. **[GPG Encryption Guide](gpg-setup.md)** - Encrypting your backups
+2. **[Python/venv Setup Guide](python-setup.md)** - Using Python virtual environments
+3. **[Backup Guide](backup-guide.md)** - How to backup your emails
+4. **[Restore Guide](restore-guide.md)** - How to restore emails from backups
+5. **[S3 Configuration](s3-setup.md)** - Setting up S3 storage (MinIO, Hetzner, AWS)
+6. **[GPG Encryption Guide](gpg-setup.md)** - Encrypting your backups
 
 ## Common Use Cases
 
@@ -142,10 +156,14 @@ docker run --rm \
 - Docker installed
 - GPG keyring volume (if using encryption): `-v ~/.gnupg:/root/.gnupg`
 
-### For Python
+### For Python (venv)
 - Python 3.6+
-- AWS CLI (`pip install awscli` or `apt install awscli`)
-- GPG (`apt install gnupg`)
+- Virtual environment recommended
+- Python dependencies: `pip install -r requirements.txt`
+- System dependencies:
+  - GPG: `apt install gnupg` (Ubuntu/Debian)
+  - GPG: `yum install gnupg` (RHEL/CentOS)
+  - GPG: `brew install gnupg` (macOS)
 
 ## Support
 
