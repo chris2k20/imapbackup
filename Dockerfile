@@ -20,8 +20,10 @@ RUN apt-get update \
        tini gnupg ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Optional S3 support via AWS CLI (pure Python, multi-arch friendly)
-RUN pip install --no-cache-dir awscli
+# Install Python dependencies from requirements.txt (includes awscli)
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt \
+    && rm -f /tmp/requirements.txt
 
 # Create non-root user and working dirs
 RUN useradd -r -u 10001 -m app \
