@@ -782,8 +782,14 @@ def load_config_file(config_file):
         sys.exit(2)
 
 
-def parse_account_config(account, global_config):
-    """Parse a single account configuration, merging with global settings"""
+def parse_account_config(account, global_config, date_override=None):
+    """Parse a single account configuration, merging with global settings
+
+    Args:
+        account: Account configuration dict
+        global_config: Global configuration dict
+        date_override: Optional date string to override date folder (for selective restore)
+    """
     config = {}
 
     # Account name (required)
@@ -831,11 +837,15 @@ def parse_account_config(account, global_config):
     # Check if date-based folders are enabled
     use_date_folders = account.get('use_date_folders', global_config.get('use_date_folders', False))
 
-    if use_date_folders:
+    if use_date_folders or date_override:
         # Get date format (default: YYYY-MM-DD)
         date_format = account.get('date_format', global_config.get('date_format', '%Y-%m-%d'))
+        # Use override date if provided, otherwise use current date
+        if date_override:
+            date_str = date_override
+        else:
+            date_str = time.strftime(date_format)
         # Add date to the path: basedir/account_name/{date}/
-        date_str = time.strftime(date_format)
         config['basedir'] = os.path.join(global_basedir, account_name, date_str)
     else:
         # Standard path: basedir/account_name/
@@ -881,10 +891,14 @@ def parse_account_config(account, global_config):
             config['s3_prefix'] = account_s3['prefix']
         else:
             global_prefix = global_s3.get('prefix', 'backups')
-            if use_date_folders:
+            if use_date_folders or date_override:
                 # Include date in S3 prefix: prefix/account_name/{date}
                 date_format = account.get('date_format', global_config.get('date_format', '%Y-%m-%d'))
-                date_str = time.strftime(date_format)
+                # Use override date if provided, otherwise use current date
+                if date_override:
+                    date_str = date_override
+                else:
+                    date_str = time.strftime(date_format)
                 config['s3_prefix'] = '%s/%s/%s' % (global_prefix.rstrip('/'), account_name, date_str)
             else:
                 # Standard prefix: prefix/account_name
@@ -925,6 +939,14 @@ def print_usage():
     print ("                               'config.yml' in the current directory.")
     print ("")
     print (" --restore                     Restore mode (use with --config).")
+    print (" --account=NAME                Filter to specific account(s). Can be comma-separated")
+    print ("                               or specified multiple times.")
+    print ("                               Example: --account=gmail,work")
+    print (" --date=DATE                   Override date for restore. Useful for restoring")
+    print ("                               from a specific date-based backup folder.")
+    print ("                               Example: --date=2025-10-10")
+    print (" --list                        List all available backups (local and S3).")
+    print ("                               Can be combined with --account to filter.")
     print ("")
     print ("Command Line Mode:")
     print (" -d DIR --mbox-dir=DIR         Write mbox files to directory. (defaults to cwd)")
@@ -978,7 +1000,8 @@ def process_cline():
                      "ssl", "timeout", "keyfile=", "certfile=", "server=", "user=", "pass=",
                      "folders=", "exclude-folders=", "thunderbird", "nospinner", "mbox-dir=", "icloud",
                      "s3-upload", "s3-endpoint=", "s3-bucket=", "s3-access-key=", "s3-secret-key=",
-                     "s3-prefix=", "gpg-encrypt", "gpg-recipient=", "gpg-import-key=", "config="]
+                     "s3-prefix=", "gpg-encrypt", "gpg-recipient=", "gpg-import-key=", "config=",
+                     "account=", "date=", "list"]
         opts, extraargs = getopt.getopt(sys.argv[1:], short_args, long_args)
     except getopt.GetoptError:
         print_usage()
@@ -1052,6 +1075,17 @@ def process_cline():
             config['gpg_import_key'] = value
         elif option == "--config":
             config['config_file'] = value
+        elif option == "--account":
+            # Store as comma-separated list (can be specified multiple times)
+            if 'account_filter' not in config:
+                config['account_filter'] = []
+            # Split by comma and add all accounts
+            accounts = [a.strip() for a in value.split(',') if a.strip()]
+            config['account_filter'].extend(accounts)
+        elif option == "--date":
+            config['date_override'] = value
+        elif option == "--list":
+            config['list_backups'] = True
         else:
             errors.append("Unknown option: " + option)
 
@@ -1233,6 +1267,153 @@ def connect_and_login(config):
 
     return server
 
+
+
+def list_backups(global_config, accounts, account_filter):
+    """List available backups for accounts (from local filesystem and/or S3)
+
+    Args:
+        global_config: Global configuration dict
+        accounts: List of account configurations
+        account_filter: Optional list of account names to filter
+    """
+    # Filter accounts if requested
+    if account_filter:
+        accounts = [acc for acc in accounts if acc.get('name') in account_filter]
+        if not accounts:
+            print ("ERROR: No accounts matched the filter")
+            return
+
+    print ("=" * 70)
+    print ("Available backups")
+    print ("=" * 70)
+    print ("")
+
+    global_basedir = global_config.get('basedir', './backups')
+
+    for account in accounts:
+        account_name = account.get('name', 'unknown')
+        print ("Account: %s" % account_name)
+        print ("-" * 70)
+
+        # Check if account uses date-based folders
+        use_date_folders = account.get('use_date_folders', global_config.get('use_date_folders', False))
+
+        account_path = os.path.join(global_basedir, account_name)
+
+        # LOCAL FILESYSTEM
+        local_backups = []
+        if os.path.exists(account_path):
+            if use_date_folders:
+                # List date folders
+                try:
+                    entries = os.listdir(account_path)
+                    for entry in sorted(entries, reverse=True):
+                        entry_path = os.path.join(account_path, entry)
+                        if os.path.isdir(entry_path):
+                            # Count mbox files
+                            mbox_files = [f for f in os.listdir(entry_path) if f.endswith('.mbox')]
+                            if mbox_files:
+                                local_backups.append({'date': entry, 'files': len(mbox_files), 'path': entry_path})
+                except OSError as e:
+                    pass
+            else:
+                # List mbox files directly
+                try:
+                    mbox_files = [f for f in os.listdir(account_path) if f.endswith('.mbox')]
+                    if mbox_files:
+                        local_backups.append({'date': 'N/A', 'files': len(mbox_files), 'path': account_path})
+                except OSError as e:
+                    pass
+
+        if local_backups:
+            print ("  Local backups:")
+            for backup in local_backups:
+                if backup['date'] == 'N/A':
+                    print ("    %s (%d mbox files)" % (backup['path'], backup['files']))
+                else:
+                    print ("    Date: %s (%d mbox files)" % (backup['date'], backup['files']))
+        else:
+            print ("  Local backups: None found")
+
+        # S3 BACKUPS
+        global_s3 = global_config.get('s3', {})
+        account_s3 = account.get('s3', {})
+        s3_enabled = account.get('s3_enabled', account_s3.get('enabled', global_s3.get('enabled', False)))
+
+        if s3_enabled:
+            print ("  S3 backups:")
+            s3_endpoint = account_s3.get('endpoint', global_s3.get('endpoint', ''))
+            s3_bucket = account_s3.get('bucket', global_s3.get('bucket', ''))
+            s3_access_key = account_s3.get('access_key', global_s3.get('access_key', ''))
+            s3_secret_key = account_s3.get('secret_key', global_s3.get('secret_key', ''))
+            global_prefix = global_s3.get('prefix', 'backups')
+
+            # Build S3 prefix for this account
+            if use_date_folders:
+                # List all date folders in S3
+                s3_prefix = '%s/%s/' % (global_prefix.rstrip('/'), account_name)
+            else:
+                s3_prefix = '%s/%s/' % (global_prefix.rstrip('/'), account_name)
+
+            try:
+                # Use AWS CLI to list objects
+                env = os.environ.copy()
+                env['AWS_ACCESS_KEY_ID'] = s3_access_key
+                env['AWS_SECRET_ACCESS_KEY'] = s3_secret_key
+
+                cmd = [
+                    'aws', 's3', 'ls',
+                    's3://%s/%s' % (s3_bucket, s3_prefix),
+                    '--endpoint-url', s3_endpoint,
+                    '--recursive'
+                ]
+
+                result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=False)
+
+                if result.returncode == 0 and result.stdout.strip():
+                    # Parse output
+                    lines = result.stdout.strip().split('\n')
+                    s3_backups = {}
+
+                    for line in lines:
+                        # Parse line format: "2025-10-10 14:30:00   12345  path/to/file"
+                        parts = line.split()
+                        if len(parts) >= 4:
+                            s3_key = ' '.join(parts[3:])
+                            # Extract date from path if present
+                            if use_date_folders:
+                                # Extract date folder from path
+                                # Format: prefix/account_name/YYYY-MM-DD/file.mbox
+                                path_parts = s3_key.split('/')
+                                if len(path_parts) >= 3:
+                                    date_folder = path_parts[-2]
+                                    if date_folder not in s3_backups:
+                                        s3_backups[date_folder] = 0
+                                    if s3_key.endswith('.mbox') or s3_key.endswith('.mbox.gpg'):
+                                        s3_backups[date_folder] += 1
+                            else:
+                                # No date folders
+                                if 'latest' not in s3_backups:
+                                    s3_backups['latest'] = 0
+                                if s3_key.endswith('.mbox') or s3_key.endswith('.mbox.gpg'):
+                                    s3_backups['latest'] += 1
+
+                    if s3_backups:
+                        for date, count in sorted(s3_backups.items(), reverse=True):
+                            if date == 'latest':
+                                print ("    %d mbox files in s3://%s/%s" % (count, s3_bucket, s3_prefix))
+                            else:
+                                print ("    Date: %s (%d mbox files) in s3://%s/%s%s/" % (date, count, s3_bucket, s3_prefix, date))
+                    else:
+                        print ("    None found")
+                else:
+                    print ("    Unable to list (check S3 credentials and permissions)")
+
+            except Exception as e:
+                print ("    Error listing S3: %s" % str(e))
+
+        print ("")
 
 
 def create_basedir(basedir):
@@ -1487,10 +1668,32 @@ def main():
                 print ("ERROR: No accounts defined in config file")
                 sys.exit(2)
 
+            # Check if list mode was requested
+            if config.get('list_backups', False):
+                account_filter = config.get('account_filter', [])
+                list_backups(global_config, accounts, account_filter)
+                sys.exit(0)
+
             print ("Found %d account(s) to process\n" % len(accounts))
 
             # Check if restore mode was specified on command line
             restore_mode = config.get('restore', False)
+
+            # Check if account filtering was specified
+            account_filter = config.get('account_filter', [])
+            if account_filter:
+                print ("Account filter active: %s\n" % ', '.join(account_filter))
+                # Filter accounts
+                accounts = [acc for acc in accounts if acc.get('name') in account_filter]
+                if not accounts:
+                    print ("ERROR: No accounts matched the filter")
+                    sys.exit(2)
+                print ("Filtered to %d account(s)\n" % len(accounts))
+
+            # Get date override if specified
+            date_override = config.get('date_override')
+            if date_override:
+                print ("Date override active: %s\n" % date_override)
 
             # Process each account
             success_count = 0
@@ -1502,8 +1705,8 @@ def main():
                 print ("Processing account %d/%d: %s" % (i, len(accounts), account_name))
                 print ("=" * 70)
 
-                # Parse account config
-                account_config = parse_account_config(account, global_config)
+                # Parse account config with optional date override
+                account_config = parse_account_config(account, global_config, date_override)
 
                 # Override restore mode if specified on command line
                 if restore_mode:

@@ -507,6 +507,159 @@ python3 imapbackup.py --config=config.yaml
 python3 imapbackup.py --config=/path/to/my-config.yaml
 ```
 
+---
+
+## Listing Available Backups
+
+You can list all available backups (both local and S3) for your accounts:
+
+```bash
+# List all backups for all accounts
+python3 imapbackup.py --config=config.yaml --list
+
+# List backups for specific account(s)
+python3 imapbackup.py --config=config.yaml --list --account=personal-gmail
+
+# List backups for multiple accounts
+python3 imapbackup.py --config=config.yaml --list --account=personal-gmail,work-office365
+```
+
+**Output example:**
+```
+Available backups
+======================================================================
+
+Account: personal-gmail
+----------------------------------------------------------------------
+  Local backups:
+    Date: 2025-10-10 (15 mbox files)
+    Date: 2025-10-09 (15 mbox files)
+    Date: 2025-10-08 (14 mbox files)
+  S3 backups:
+    Date: 2025-10-10 (15 mbox files) in s3://email-backups/backups/personal-gmail/2025-10-10/
+    Date: 2025-10-09 (15 mbox files) in s3://email-backups/backups/personal-gmail/2025-10-09/
+
+Account: work-office365
+----------------------------------------------------------------------
+  Local backups: None found
+  S3 backups:
+    Date: 2025-10-10 (8 mbox files) in s3://email-backups/backups/work-office365/2025-10-10/
+```
+
+The `--list` command shows:
+- **Local backups**: Scans the local filesystem for backup directories
+- **S3 backups**: Queries S3 storage for backed-up files (if S3 is enabled)
+- **Date folders**: Shows available dates for date-based backups
+- **File counts**: Number of mbox files in each backup
+
+---
+
+## Selective Account Operations
+
+When you have multiple accounts configured but only want to work with specific ones, use the `--account` flag:
+
+### Backup Specific Accounts
+
+```bash
+# Backup only personal-gmail
+python3 imapbackup.py --config=config.yaml --account=personal-gmail
+
+# Backup multiple specific accounts
+python3 imapbackup.py --config=config.yaml --account=personal-gmail,work-office365
+```
+
+### Restore Specific Accounts
+
+```bash
+# Restore only one account
+python3 imapbackup.py --config=config.yaml --restore --account=personal-gmail
+
+# Restore multiple accounts
+python3 imapbackup.py --config=config.yaml --restore --account=personal-gmail,work-office365
+```
+
+---
+
+## Selective Date Restore
+
+When using date-based backup folders, you can restore from a specific date using the `--date` flag:
+
+### Restore from a Specific Date
+
+```bash
+# Restore personal-gmail from October 9th backup
+python3 imapbackup.py --config=config.yaml --restore --account=personal-gmail --date=2025-10-09
+
+# Restore all accounts from October 8th backup
+python3 imapbackup.py --config=config.yaml --restore --date=2025-10-08
+
+# Restore specific accounts from specific date
+python3 imapbackup.py --config=config.yaml --restore --account=personal-gmail,work-office365 --date=2025-10-09
+```
+
+**How it works:**
+- The `--date` flag overrides the current date for folder path resolution
+- Local path becomes: `./backups/account_name/2025-10-09/`
+- S3 prefix becomes: `backups/account_name/2025-10-09/`
+- The script will download from S3 (if configured) and restore from that specific date
+
+**Use cases:**
+- **Disaster recovery**: Restore from a backup before corruption occurred
+- **Point-in-time restore**: Recover emails as they were on a specific date
+- **Testing**: Restore to a test environment from a historical backup
+- **Compliance**: Restore from archived monthly/weekly backups
+
+---
+
+## Common Scenarios
+
+### Scenario 1: User has 10 accounts but wants to restore only one
+
+```bash
+# Step 1: List available backups for the specific account
+python3 imapbackup.py --config=config.yaml --list --account=archive-gmail
+
+# Output shows:
+#   Date: 2025-10-10 (15 mbox files)
+#   Date: 2025-10-09 (15 mbox files)
+#   Date: 2025-10-08 (14 mbox files)
+
+# Step 2: Restore from yesterday's backup
+python3 imapbackup.py --config=config.yaml --restore --account=archive-gmail --date=2025-10-09
+```
+
+### Scenario 2: Selective backup of critical accounts
+
+```bash
+# Daily: Backup only critical accounts
+python3 imapbackup.py --config=config.yaml --account=critical-account,work-office365
+
+# Weekly: Backup all accounts (no --account flag)
+python3 imapbackup.py --config=config.yaml
+```
+
+### Scenario 3: Disaster recovery from last week
+
+```bash
+# Step 1: Check what backups are available
+python3 imapbackup.py --config=config.yaml --list
+
+# Step 2: Restore all accounts from last Friday
+python3 imapbackup.py --config=config.yaml --restore --date=2025-10-05
+```
+
+### Scenario 4: Monthly archive restore
+
+```bash
+# Config uses monthly date format: date_format: '%Y/%m'
+# This creates backups like: ./backups/monthly-archive/2025/09/
+
+# Restore September's backup
+python3 imapbackup.py --config=config.yaml --restore --account=monthly-archive --date=2025/09
+```
+
+---
+
 ### Restore Mode
 
 Restore all accounts defined in your config file to their respective IMAP servers:
