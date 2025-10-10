@@ -71,28 +71,62 @@ class SkipFolderException(Exception):
 class Spinner:
     """Prints out message with cute spinner, indicating progress"""
 
-    def __init__(self, message, nospinner):
-        """Spinner constructor"""
+    def __init__(self, message, nospinner, total=None):
+        """Spinner constructor
+
+        Args:
+            message: Base message to display
+            nospinner: If True, disable spinner animation
+            total: Optional total count for progress tracking
+        """
         self.glyphs = "|/-\\"
         self.pos = 0
         self.message = message
         self.nospinner = nospinner
+        self.total = total
+        self.current = 0
         sys.stdout.write(message)
         sys.stdout.flush()
+        self.spin()
+
+    def update(self, current=None, message=None):
+        """Update progress
+
+        Args:
+            current: Current progress count
+            message: Optional message override
+        """
+        if current is not None:
+            self.current = current
+        if message is not None:
+            self.message = message
         self.spin()
 
     def spin(self):
         """Rotate the spinner"""
         if sys.stdin.isatty() and not self.nospinner:
-            sys.stdout.write("\r" + self.message + " " + self.glyphs[self.pos])
+            display_msg = self.message
+
+            # Add progress if total is set
+            if self.total is not None and self.total > 0:
+                percentage = int((self.current / self.total) * 100)
+                display_msg = "%s (%d/%d, %d%%)" % (self.message, self.current, self.total, percentage)
+
+            sys.stdout.write("\r" + display_msg + " " + self.glyphs[self.pos])
             sys.stdout.flush()
             self.pos = (self.pos+1) % len(self.glyphs)
 
     def stop(self):
         """Erase the spinner from the screen"""
         if sys.stdin.isatty() and not self.nospinner:
-            sys.stdout.write("\r" + self.message + "  ")
-            sys.stdout.write("\r" + self.message)
+            display_msg = self.message
+
+            # Add final progress if total is set
+            if self.total is not None and self.total > 0:
+                display_msg = "%s (%d/%d, 100%%)" % (self.message, self.total, self.total)
+
+            sys.stdout.write("\r" + display_msg + "  ")
+            sys.stdout.write("\r" + display_msg)
             sys.stdout.flush()
 
 
@@ -123,6 +157,9 @@ UUID = '19AF1258-1AAF-44EF-9D9A-731079D6FAD7'  # Used to generate Message-Ids
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_RETRY_DELAY = 1.0  # seconds
 DEFAULT_RETRY_BACKOFF = 2.0  # exponential backoff multiplier
+
+# Memory optimization configuration
+FETCH_BATCH_SIZE = 1000  # Number of messages to fetch headers for in one batch
 
 
 def retry_on_network_error(func, max_retries=DEFAULT_MAX_RETRIES, delay=DEFAULT_RETRY_DELAY, backoff=DEFAULT_RETRY_BACKOFF, operation_name=None):
@@ -520,8 +557,9 @@ def upload_messages(server, foldername, filename, messages_to_upload, nospinner,
         print ("Messages to upload: 0")
         return (0, 0, 0)
 
-    spinner = Spinner("Uploading %s messages to %s" % (len(messages_to_upload), foldername),
-                      nospinner)
+    total_messages = len(messages_to_upload)
+    spinner = Spinner("Uploading messages to %s" % foldername,
+                      nospinner, total=total_messages)
 
     try:
         # Open the mbox file
@@ -537,6 +575,7 @@ def upload_messages(server, foldername, filename, messages_to_upload, nospinner,
             return (0, len(messages_to_upload), 0)
 
         # Iterate through messages in the mbox file
+        msg_index = 0
         try:
             for message in mbox:
                 try:
@@ -546,18 +585,18 @@ def upload_messages(server, foldername, filename, messages_to_upload, nospinner,
                     except Exception as e:
                         print ("\nWARNING: Cannot read Message-Id from message: %s" % str(e))
                         failed += 1
-                        spinner.spin()
                         continue
 
                     # Check if this message needs to be uploaded
                     if msg_id in messages_to_upload:
+                        msg_index += 1
+                        spinner.update(current=msg_index)
                         # Convert message to string (bytes)
                         try:
                             msg_bytes = bytes(str(message), 'utf-8')
                         except Exception as e:
                             print ("\nERROR: Cannot convert message %s to bytes: %s" % (msg_id, str(e)))
                             failed += 1
-                            spinner.spin()
                             continue
 
                         # Upload to IMAP server with retry logic
@@ -591,8 +630,6 @@ def upload_messages(server, foldername, filename, messages_to_upload, nospinner,
                 except Exception as e:
                     print ("\nERROR: Error processing message for upload: %s" % str(e))
                     failed += 1
-
-                spinner.spin()
 
         except Exception as e:
             spinner.stop()
@@ -658,12 +695,16 @@ def download_messages(server, filename, messages, overwrite, nospinner, thunderb
             mbox.close()
             return (0, 0, 0)
 
-        spinner = Spinner("Downloading %s new messages to %s" % (len(messages), filename),
-                          nospinner)
+        total_messages = len(messages)
+        spinner = Spinner("Downloading messages to %s" % filename,
+                          nospinner, total=total_messages)
         from_re = re.compile(b"\n(>*)From ")
 
         # each new message
+        msg_index = 0
         for msg_id in messages.keys():
+            msg_index += 1
+            spinner.update(current=msg_index)
             try:
                 # This "From" and the terminating newline below delimit messages
                 # in mbox files.  Note that RFC 4155 specifies that the date be
@@ -692,13 +733,11 @@ def download_messages(server, filename, messages, overwrite, nospinner, thunderb
                 except (imaplib.IMAP4.error, socket.error, socket.timeout) as e:
                     print ("\nWARNING: Failed to fetch message %s after retries: %s" % (msg_id_str, str(e)))
                     failed_count += 1
-                    spinner.spin()
                     continue
 
                 if typ != 'OK' or not data or not data[0]:
                     print ("\nWARNING: FETCH returned unexpected response for message %s" % msg_id_str)
                     failed_count += 1
-                    spinner.spin()
                     continue
 
                 try:
@@ -706,7 +745,6 @@ def download_messages(server, filename, messages, overwrite, nospinner, thunderb
                 except (IndexError, TypeError) as e:
                     print ("\nWARNING: Cannot extract data from message %s: %s" % (msg_id_str, str(e)))
                     failed_count += 1
-                    spinner.spin()
                     continue
 
                 text_bytes = data_bytes.strip().replace(b'\r', b'')
@@ -726,7 +764,6 @@ def download_messages(server, filename, messages, overwrite, nospinner, thunderb
                 except IOError as e:
                     print ("\nERROR: Failed to write message %s to disk: %s" % (msg_id_str, str(e)))
                     failed_count += 1
-                    spinner.spin()
                     continue
 
                 size = len(text_bytes)
@@ -741,8 +778,6 @@ def download_messages(server, filename, messages, overwrite, nospinner, thunderb
                 # Catch-all for unexpected errors
                 print ("\nERROR: Unexpected error processing message %s: %s" % (msg_id, str(e)))
                 failed_count += 1
-
-            spinner.spin()
 
         mbox.close()
         spinner.stop()
@@ -872,7 +907,7 @@ def scan_folder(server, foldername, nospinner):
     """
     messages = {}
     foldername_quoted = '"{}"'.format(foldername)
-    spinner = Spinner("Folder %s" % foldername_quoted, nospinner)
+    spinner = None  # Will be initialized after we know num_msgs
 
     try:
         # Select the folder with retry logic
@@ -885,115 +920,116 @@ def scan_folder(server, foldername, nospinner):
                 operation_name="Select folder %s" % foldername_quoted
             )
         except (imaplib.IMAP4.error, socket.error, socket.timeout) as e:
-            spinner.stop()
             raise SkipFolderException("SELECT failed for %s after retries: %s" % (foldername_quoted, str(e)))
         except Exception as e:
-            spinner.stop()
             raise SkipFolderException("Unexpected error selecting folder %s: %s" % (foldername_quoted, str(e)))
 
         if 'OK' != typ:
-            spinner.stop()
             raise SkipFolderException("SELECT failed: %s" % data)
 
         try:
             num_msgs = int(data[0])
         except (ValueError, IndexError, TypeError) as e:
-            spinner.stop()
             raise SkipFolderException("Cannot parse message count for %s: %s" % (foldername_quoted, str(e)))
 
-        # Retrieve all Message-Id headers, making sure we don't mark all messages as read.
-        #
-        # The result is an array of result tuples with a terminating closing parenthesis
-        # after each tuple. That means that the first result is at index 0, the second at
-        # 2, third at 4, and so on.
-        #
-        # e.g.
-        # [
-        #   (b'1 (BODY[...', b'Message-Id: ...'), b')', # indices 0 and 1
-        #   (b'2 (BODY[...', b'Message-Id: ...'), b')', # indices 2 and 3
-        #   ...
-        #  ]
+        # Initialize spinner with total message count for progress tracking
+        spinner = Spinner("Folder %s" % foldername_quoted, nospinner, total=num_msgs)
+
+        # Retrieve Message-Id headers in batches to avoid memory issues with large mailboxes
+        # Process messages in batches of FETCH_BATCH_SIZE to keep memory usage constant
         if num_msgs > 0:
-            try:
-                def fetch_headers_operation():
-                    return server.fetch(f'1:{num_msgs}', '(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])')
+            # Process messages in batches
+            for batch_start in range(1, num_msgs + 1, FETCH_BATCH_SIZE):
+                batch_end = min(batch_start + FETCH_BATCH_SIZE - 1, num_msgs)
+                batch_range = '%d:%d' % (batch_start, batch_end)
 
-                typ, data = retry_on_network_error(
-                    fetch_headers_operation,
-                    operation_name="Fetch headers from %s" % foldername_quoted
-                )
-            except (imaplib.IMAP4.error, socket.error, socket.timeout) as e:
-                spinner.stop()
-                raise SkipFolderException("FETCH failed for %s after retries: %s" % (foldername_quoted, str(e)))
-            except Exception as e:
-                spinner.stop()
-                raise SkipFolderException("Unexpected error fetching headers from %s: %s" % (foldername_quoted, str(e)))
-
-            if 'OK' != typ:
-                spinner.stop()
-                raise SkipFolderException("FETCH failed: %s" % (data))
-
-        # each message
-        for i in range(0, num_msgs):
-            num = 1 + i
-
-            try:
-                # Double the index because of the terminating parenthesis after each tuple.
-                data_str = str(data[2 * i][1], 'utf-8', 'replace')
-                header = data_str.strip()
-
-                # remove newlines inside Message-Id (a dumb Exchange trait)
-                header = BLANKS_RE.sub(' ', header)
+                # Fetch headers for this batch
+                # The result is an array of result tuples with a terminating closing parenthesis
+                # after each tuple. That means that the first result is at index 0, the second at
+                # 2, third at 4, and so on.
                 try:
-                    msg_id = MSGID_RE.match(header).group(1)
-                    if msg_id not in messages.keys():
-                        # avoid adding dupes
-                        messages[msg_id] = num
-                except (IndexError, AttributeError):
-                    # Some messages may have no Message-Id, so we'll synthesise one
-                    # (this usually happens with Sent, Drafts and .Mac news)
-                    try:
-                        msg_typ, msg_data = server.fetch(
-                            str(num), '(BODY[HEADER.FIELDS (FROM TO CC DATE SUBJECT)])')
-                    except (imaplib.IMAP4.error, socket.error, socket.timeout) as e:
-                        print ("\nWARNING: Cannot fetch headers for message %d: %s" % (num, str(e)))
-                        spinner.spin()
-                        continue
-                    except Exception as e:
-                        print ("\nWARNING: Unexpected error fetching message %d: %s" % (num, str(e)))
-                        spinner.spin()
-                        continue
+                    def fetch_headers_operation():
+                        return server.fetch(batch_range, '(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])')
 
-                    if 'OK' != msg_typ:
-                        print ("\nWARNING: FETCH %d failed: %s" % (num, msg_data))
-                        spinner.spin()
-                        continue
+                    typ, data = retry_on_network_error(
+                        fetch_headers_operation,
+                        operation_name="Fetch headers %s from %s" % (batch_range, foldername_quoted)
+                    )
+                except (imaplib.IMAP4.error, socket.error, socket.timeout) as e:
+                    spinner.stop()
+                    raise SkipFolderException("FETCH failed for %s after retries: %s" % (foldername_quoted, str(e)))
+                except Exception as e:
+                    spinner.stop()
+                    raise SkipFolderException("Unexpected error fetching headers from %s: %s" % (foldername_quoted, str(e)))
+
+                if 'OK' != typ:
+                    spinner.stop()
+                    raise SkipFolderException("FETCH failed: %s" % (data))
+
+                # Process each message in this batch
+                batch_size = batch_end - batch_start + 1
+                for i in range(0, batch_size):
+                    num = batch_start + i
+                    spinner.update(current=num)
 
                     try:
-                        data_str = str(msg_data[0][1], 'utf-8', 'replace')
+                        # Double the index because of the terminating parenthesis after each tuple.
+                        data_str = str(data[2 * i][1], 'utf-8', 'replace')
                         header = data_str.strip()
-                        header = header.replace('\r\n', '\t').encode('utf-8')
-                        messages['<' + UUID + '.' +
-                                 hashlib.sha1(header).hexdigest() + '>'] = num
+
+                        # remove newlines inside Message-Id (a dumb Exchange trait)
+                        header = BLANKS_RE.sub(' ', header)
+                        try:
+                            msg_id = MSGID_RE.match(header).group(1)
+                            if msg_id not in messages.keys():
+                                # avoid adding dupes
+                                messages[msg_id] = num
+                        except (IndexError, AttributeError):
+                            # Some messages may have no Message-Id, so we'll synthesise one
+                            # (this usually happens with Sent, Drafts and .Mac news)
+                            try:
+                                msg_typ, msg_data = server.fetch(
+                                    str(num), '(BODY[HEADER.FIELDS (FROM TO CC DATE SUBJECT)])')
+                            except (imaplib.IMAP4.error, socket.error, socket.timeout) as e:
+                                print ("\nWARNING: Cannot fetch headers for message %d: %s" % (num, str(e)))
+                                continue
+                            except Exception as e:
+                                print ("\nWARNING: Unexpected error fetching message %d: %s" % (num, str(e)))
+                                continue
+
+                            if 'OK' != msg_typ:
+                                print ("\nWARNING: FETCH %d failed: %s" % (num, msg_data))
+                                continue
+
+                            try:
+                                data_str = str(msg_data[0][1], 'utf-8', 'replace')
+                                header = data_str.strip()
+                                header = header.replace('\r\n', '\t').encode('utf-8')
+                                messages['<' + UUID + '.' +
+                                         hashlib.sha1(header).hexdigest() + '>'] = num
+                            except Exception as e:
+                                print ("\nWARNING: Cannot generate message ID for message %d: %s" % (num, str(e)))
+
+                    except (IndexError, KeyError, TypeError) as e:
+                        print ("\nWARNING: Cannot process message %d in %s: %s" % (num, foldername_quoted, str(e)))
                     except Exception as e:
-                        print ("\nWARNING: Cannot generate message ID for message %d: %s" % (num, str(e)))
+                        print ("\nWARNING: Unexpected error processing message %d: %s" % (num, str(e)))
 
-            except (IndexError, KeyError, TypeError) as e:
-                print ("\nWARNING: Cannot process message %d in %s: %s" % (num, foldername_quoted, str(e)))
-            except Exception as e:
-                print ("\nWARNING: Unexpected error processing message %d: %s" % (num, str(e)))
-
-            spinner.spin()
+                # Free up memory from this batch before processing the next one
+                del data
+                gc.collect()
 
     except SkipFolderException:
         # Re-raise SkipFolderException to allow caller to continue with next folder
         raise
     except Exception as e:
-        spinner.stop()
+        if spinner:
+            spinner.stop()
         print ("\nERROR: Fatal error in scan_folder for %s: %s" % (foldername_quoted, str(e)))
         raise SkipFolderException("Fatal error scanning folder: %s" % str(e))
     finally:
-        spinner.stop()
+        if spinner:
+            spinner.stop()
         print (":",)
 
     # done
