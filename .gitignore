@@ -38,6 +38,9 @@ nosetests.xml
 # Things that might show up during testing
 *.mbox
 
+# Configuration files (may contain passwords)
+config.yaml
+
 # Jekyll / GitHub Pages
 _site/
 .sass-cache/

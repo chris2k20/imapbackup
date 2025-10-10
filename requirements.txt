@@ -4,6 +4,9 @@
 # AWS CLI for S3 storage support
 awscli>=1.29.0
 
+# YAML configuration support (optional, for multi-account backup)
+pyyaml>=6.0
+
 # Note: The following are system dependencies, install via package manager:
 # - gnupg (for GPG encryption)
 #   Ubuntu/Debian: apt install gnupg

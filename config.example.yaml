@@ -1,0 +1,115 @@
+# IMAP Backup Configuration File
+# This file allows you to backup multiple email accounts with a single command
+
+# Global settings (applied to all accounts unless overridden)
+global:
+  # Base directory for all backups (each account gets a subdirectory)
+  basedir: ./backups
+
+  # Use SSL for all connections
+  ssl: true
+
+  # Timeout in seconds
+  timeout: 60
+
+  # Disable spinner (useful for logs)
+  nospinner: false
+
+  # S3 configuration (optional, can be overridden per account)
+  s3:
+    enabled: true
+    endpoint: https://s3.eu-central-1.hetzner.cloud
+    bucket: email-backups
+    access_key: YOUR_S3_ACCESS_KEY
+    secret_key: YOUR_S3_SECRET_KEY
+    # Base prefix for all accounts (account name will be appended)
+    prefix: backups
+
+  # GPG encryption (optional, can be overridden per account)
+  gpg:
+    enabled: true
+    recipient: backup@example.com
+    # Import public key from file, URL, or environment variable
+    import_key: https://example.com/keys/backup-public.asc
+    # Or use: env:GPG_PUBLIC_KEY
+    # Or use: /path/to/public-key.asc
+
+# Email accounts to backup
+accounts:
+  # Account 1: Gmail
+  - name: personal-gmail
+    server: imap.gmail.com
+    port: 993  # Optional, defaults to 993 for SSL, 143 for non-SSL
+    user: myemail@gmail.com
+    # Password options (choose one):
+    # 1. Direct password (not recommended for production)
+    pass: my_password
+    # 2. Password from file (recommended)
+    # pass: @/path/to/password/file
+    # 3. Password from environment variable
+    # pass: env:GMAIL_PASSWORD
+
+    # Optional: folders to backup (comma-separated)
+    # If not specified, all folders are backed up
+    folders: INBOX,Sent,Important
+
+    # Optional: folders to exclude
+    # exclude_folders: Trash,Spam
+
+    # Optional: override global S3 prefix
+    # s3_prefix: gmail-backup
+
+    # Optional: account-specific GPG recipient
+    # gpg_recipient: personal-backup@example.com
+
+  # Account 2: Office 365
+  - name: work-office365
+    server: outlook.office365.com
+    user: user@company.com
+    pass: @/secrets/work_password
+
+    # Exclude certain folders
+    exclude_folders: Junk Email,Deleted Items,Archive
+
+    # Optional: disable S3 for this account
+    # s3_enabled: false
+
+    # Optional: disable GPG for this account
+    # gpg_enabled: false
+
+  # Account 3: ProtonMail
+  - name: secure-proton
+    server: 127.0.0.1
+    port: 1143
+    user: secure@proton.me
+    pass: env:PROTON_PASSWORD
+    ssl: false  # ProtonMail Bridge uses local unencrypted connection
+
+    # Override S3 settings for this account
+    s3:
+      bucket: protonmail-backups
+      prefix: secure
+
+    # Use different GPG key
+    gpg:
+      recipient: secure-backup@example.com
+      import_key: /etc/gpg-keys/secure-public.asc
+
+  # Account 4: Self-hosted
+  - name: personal-selfhosted
+    server: mail.example.com
+    user: admin@example.com
+    pass: @/root/.mail_password
+
+    # Backup only specific folders
+    folders: INBOX,Sent,Drafts
+
+    # Optional: custom S3 prefix
+    s3_prefix: selfhosted/admin
+
+# Notes:
+# - Each account creates a subdirectory: {basedir}/{account_name}/
+# - S3 prefix becomes: {global_prefix}/{account_name}/ (or custom if specified)
+# - If both 'folders' and 'exclude_folders' are set, only 'folders' is used
+# - Passwords starting with '@' read from file, 'env:' reads from environment
+# - Account settings override global settings

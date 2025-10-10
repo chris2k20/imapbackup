@@ -63,6 +63,7 @@ python3 imapbackup.py -s imap.example.com -u user@example.com -e
 - 📁 **Standard mbox Format** - Import into any email client
 
 ### New Features ✨
+- 📋 **Multi-Account Backup** - Backup multiple accounts with YAML configuration
 - 🔑 **Flexible GPG Key Import** - Import keys from files, URLs, or environment variables
 - 🚫 **No Keyring Mounting** - Encrypt without mounting `~/.gnupg` in Docker
 - ☸️ **Kubernetes Ready** - Perfect for cloud-native deployments
@@ -79,6 +80,7 @@ python3 imapbackup.py -s imap.example.com -u user@example.com -e
 - **[Restore Guide](docs/restore-guide.md)** - How to restore emails
 
 ### Advanced
+- **[Multi-Account Backup](docs/multi-account-setup.md)** - Backup multiple accounts with YAML config 🆕
 - **[S3 Configuration](docs/s3-setup.md)** - Configure cloud storage
 - **[GPG Encryption](docs/gpg-setup.md)** - Secure your backups
 - **[GPG Key Import](docs/gpg-key-import.md)** - Flexible key management 🆕
@@ -152,6 +154,39 @@ docker run --rm \
   --gpg-import-key=env:GPG_PUBLIC_KEY
 ```
 
+### Multi-Account Backup 🆕
+
+```bash
+# Create config.yaml
+cat > config.yaml <<EOF
+global:
+  basedir: ./backups
+  s3:
+    enabled: true
+    endpoint: https://s3.hetzner.cloud
+    bucket: email-backups
+  gpg:
+    enabled: true
+    recipient: backup@example.com
+
+accounts:
+  - name: personal-gmail
+    server: imap.gmail.com
+    user: myemail@gmail.com
+    pass: env:GMAIL_PASSWORD
+
+  - name: work-office365
+    server: outlook.office365.com
+    user: user@company.com
+    pass: env:WORK_PASSWORD
+EOF
+
+# Backup all accounts with one command
+python3 imapbackup.py --config=config.yaml
+```
+
+See **[Multi-Account Setup Guide](docs/multi-account-setup.md)** for complete documentation.
+
 ---
 
 ## 🛠️ Command Line Options
@@ -170,6 +205,13 @@ docker run --rm \
 -a                   Append mode (default, incremental)
 -y                   Overwrite mode (full backup)
 -r                   Restore mode (upload to IMAP)
+```
+
+### Multi-Account Mode 🆕
+```
+--config=FILE        Load settings from YAML config file
+                     Allows backing up multiple accounts
+                     See config.example.yaml for format
 ```
 
 ### Folder Selection
@@ -237,6 +279,16 @@ docker run --rm \
 ## 💡 What's New
 
 ### v2.0 Features 🆕
+
+#### Multi-Account Configuration
+Backup multiple email accounts with a single YAML configuration file:
+- **Global Settings**: Define common S3, GPG, and connection settings once
+- **Account-Specific Overrides**: Customize per-account as needed
+- **Auto Directory Structure**: Each account gets its own subdirectory
+- **Auto S3 Prefixes**: Automatic prefix generation per account
+- **Flexible Passwords**: Support for direct, file-based, and environment variables
+
+See **[Multi-Account Setup Guide](docs/multi-account-setup.md)** for complete documentation.
 
 #### Flexible GPG Key Import
 No more mounting GPG keyrings! Import public keys from:

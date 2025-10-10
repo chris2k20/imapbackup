@@ -72,9 +72,10 @@ python3 imapbackup.py \
 2. **[Python/venv Setup Guide](python-setup.md)** - Using Python virtual environments
 3. **[Backup Guide](backup-guide.md)** - How to backup your emails
 4. **[Restore Guide](restore-guide.md)** - How to restore emails from backups
-5. **[S3 Configuration](s3-setup.md)** - Setting up S3 storage (MinIO, Hetzner, AWS)
-6. **[GPG Encryption Guide](gpg-setup.md)** - Encrypting your backups
-7. **[GPG Key Import Guide](gpg-key-import.md)** - Flexible GPG key import (files, URLs, environment variables)
+5. **[Multi-Account Backup](multi-account-setup.md)** - Backup multiple email accounts with YAML configuration
+6. **[S3 Configuration](s3-setup.md)** - Setting up S3 storage (MinIO, Hetzner, AWS)
+7. **[GPG Encryption Guide](gpg-setup.md)** - Encrypting your backups
+8. **[GPG Key Import Guide](gpg-key-import.md)** - Flexible GPG key import (files, URLs, environment variables)
 
 ## Common Use Cases
 

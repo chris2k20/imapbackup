@@ -57,6 +57,13 @@ import hashlib
 import subprocess
 import tempfile
 
+# Try to import YAML, but make it optional
+try:
+    import yaml
+    HAS_YAML = True
+except ImportError:
+    HAS_YAML = False
+
 class SkipFolderException(Exception):
     """Indicates aborting processing of current folder, continue with next folder."""
     pass
@@ -747,10 +754,154 @@ def get_names(server, thunderbird, nospinner):
     return names
 
 
+def load_config_file(config_file):
+    """Load configuration from YAML file"""
+    if not HAS_YAML:
+        print ("ERROR: PyYAML is required for config file support.")
+        print ("Install with: pip install pyyaml")
+        sys.exit(2)
+
+    try:
+        with open(config_file, 'r') as f:
+            config_data = yaml.safe_load(f)
+
+        if not config_data or 'accounts' not in config_data:
+            print ("ERROR: Invalid config file. Must contain 'accounts' section.")
+            sys.exit(2)
+
+        return config_data
+
+    except FileNotFoundError:
+        print ("ERROR: Config file not found: %s" % config_file)
+        sys.exit(2)
+    except yaml.YAMLError as e:
+        print ("ERROR: Invalid YAML in config file: %s" % str(e))
+        sys.exit(2)
+    except Exception as e:
+        print ("ERROR: Failed to load config file: %s" % str(e))
+        sys.exit(2)
+
+
+def parse_account_config(account, global_config):
+    """Parse a single account configuration, merging with global settings"""
+    config = {}
+
+    # Account name (required)
+    if 'name' not in account:
+        print ("ERROR: Account missing 'name' field")
+        sys.exit(2)
+
+    account_name = account['name']
+    config['account_name'] = account_name
+
+    # Server settings
+    config['server'] = account.get('server')
+    config['user'] = account.get('user')
+
+    # Password handling
+    pass_value = account.get('pass', '')
+    if pass_value.startswith('env:'):
+        # Read from environment variable
+        env_var = pass_value[4:]
+        config['pass'] = os.environ.get(env_var, '')
+        if not config['pass']:
+            print ("ERROR: Environment variable '%s' not set for account '%s'" % (env_var, account_name))
+            sys.exit(2)
+    else:
+        # Use string_from_file to handle @file syntax
+        try:
+            config['pass'] = string_from_file(pass_value) if pass_value else ''
+        except Exception as ex:
+            print ("ERROR: Can't read password for account '%s': %s" % (account_name, str(ex)))
+            sys.exit(2)
+
+    # Port (optional)
+    if 'port' in account:
+        config['port'] = account['port']
+
+    # SSL setting (default from global or account-specific)
+    config['usessl'] = account.get('ssl', global_config.get('ssl', True))
+
+    # Timeout (default from global or account-specific)
+    config['timeout'] = account.get('timeout', global_config.get('timeout', 60))
+
+    # Base directory - create account subdirectory
+    global_basedir = global_config.get('basedir', './backups')
+    config['basedir'] = os.path.join(global_basedir, account_name)
+
+    # Folders
+    if 'folders' in account:
+        config['folders'] = account['folders']
+    if 'exclude_folders' in account:
+        config['exclude-folders'] = account['exclude_folders']
+
+    # Spinner setting
+    config['nospinner'] = account.get('nospinner', global_config.get('nospinner', False))
+
+    # Thunderbird and iCloud settings
+    config['thunderbird'] = account.get('thunderbird', global_config.get('thunderbird', False))
+    config['icloud'] = account.get('icloud', global_config.get('icloud', False))
+
+    # Restore mode (default False)
+    config['restore'] = False
+    config['overwrite'] = False
+
+    # S3 configuration
+    s3_config = {}
+    global_s3 = global_config.get('s3', {})
+    account_s3 = account.get('s3', {})
+
+    # Check if S3 is enabled for this account
+    s3_enabled = account.get('s3_enabled', account_s3.get('enabled', global_s3.get('enabled', False)))
+    config['s3_upload'] = s3_enabled
+
+    if s3_enabled:
+        # Merge S3 settings (account overrides global)
+        config['s3_endpoint'] = account_s3.get('endpoint', global_s3.get('endpoint', ''))
+        config['s3_bucket'] = account_s3.get('bucket', global_s3.get('bucket', ''))
+        config['s3_access_key'] = account_s3.get('access_key', global_s3.get('access_key', ''))
+        config['s3_secret_key'] = account_s3.get('secret_key', global_s3.get('secret_key', ''))
+
+        # S3 prefix: use custom or build from global prefix + account name
+        if 's3_prefix' in account:
+            config['s3_prefix'] = account['s3_prefix']
+        elif 's3_prefix' in account_s3:
+            config['s3_prefix'] = account_s3['prefix']
+        else:
+            global_prefix = global_s3.get('prefix', 'backups')
+            config['s3_prefix'] = '%s/%s' % (global_prefix.rstrip('/'), account_name)
+
+    # GPG configuration
+    global_gpg = global_config.get('gpg', {})
+    account_gpg = account.get('gpg', {})
+
+    # Check if GPG is enabled for this account
+    gpg_enabled = account.get('gpg_enabled', account_gpg.get('enabled', global_gpg.get('enabled', False)))
+    config['gpg_encrypt'] = gpg_enabled
+
+    if gpg_enabled:
+        # Merge GPG settings (account overrides global)
+        config['gpg_recipient'] = account_gpg.get('recipient', global_gpg.get('recipient', ''))
+        import_key = account_gpg.get('import_key', global_gpg.get('import_key', ''))
+        if import_key:
+            config['gpg_import_key'] = import_key
+
+    return config
+
+
 def print_usage():
     """Prints usage, exits"""
     #     "                                                                               "
     print ("Usage: imapbackup [OPTIONS] -s HOST -u USERNAME [-p PASSWORD]")
+    print ("   or: imapbackup --config=CONFIG_FILE [--restore]")
+    print ("")
+    print ("Config File Mode:")
+    print (" --config=FILE                 Load settings from YAML config file.")
+    print ("                               Allows backing up multiple accounts.")
+    print ("                               See config.example.yaml for format.")
+    print (" --restore                     Restore mode (use with --config).")
+    print ("")
+    print ("Command Line Mode:")
     print (" -d DIR --mbox-dir=DIR         Write mbox files to directory. (defaults to cwd)")
     print (" -a --append-to-mboxes         Append new messages to mbox files. (default)")
     print (" -y --yes-overwrite-mboxes     Overwite existing mbox files instead of appending.")
@@ -802,7 +953,7 @@ def process_cline():
                      "ssl", "timeout", "keyfile=", "certfile=", "server=", "user=", "pass=",
                      "folders=", "exclude-folders=", "thunderbird", "nospinner", "mbox-dir=", "icloud",
                      "s3-upload", "s3-endpoint=", "s3-bucket=", "s3-access-key=", "s3-secret-key=",
-                     "s3-prefix=", "gpg-encrypt", "gpg-recipient=", "gpg-import-key="]
+                     "s3-prefix=", "gpg-encrypt", "gpg-recipient=", "gpg-import-key=", "config="]
         opts, extraargs = getopt.getopt(sys.argv[1:], short_args, long_args)
     except getopt.GetoptError:
         print_usage()
@@ -874,6 +1025,8 @@ def process_cline():
             config['gpg_recipient'] = value
         elif option == "--gpg-import-key":
             config['gpg_import_key'] = value
+        elif option == "--config":
+            config['config_file'] = value
         else:
             errors.append("Unknown option: " + option)
 
@@ -887,6 +1040,10 @@ def process_cline():
 
 def check_config(config, warnings, errors):
     """Checks the config for consistency, returns (config, warnings, errors)"""
+    # Skip validation if using config file mode
+    if 'config_file' in config:
+        return config, warnings, errors
+
     if 'server' not in config:
         errors.append("No server specified.")
     if 'user' not in config:
@@ -1061,182 +1218,286 @@ def create_folder_structure(names,basedir):
                     raise
 
 
+def process_account(config):
+    """Process a single account for backup or restore"""
+    # Validate required fields
+    if 'server' not in config or 'user' not in config:
+        print ("ERROR: Account config missing required fields (server, user)")
+        return False
+
+    # Set port defaults if not specified
+    if 'port' not in config:
+        if config.get('usessl', True):
+            config['port'] = 993
+        else:
+            config['port'] = 143
+
+    # Set timeout default if not specified
+    if 'timeout' not in config:
+        config['timeout'] = 60
+
+    # Connect to server
+    try:
+        server = connect_and_login(config)
+    except Exception as e:
+        print ("ERROR: Failed to connect to account '%s': %s" % (config.get('account_name', 'unknown'), str(e)))
+        return False
+
+    # Get folder names
+    names = get_names(server, config.get('thunderbird', False), config.get('nospinner', False))
+
+    # Filter folders
+    exclude_folders = []
+    if config.get('folders') and config.get('exclude-folders'):
+        print ("ERROR: Cannot use both 'folders' and 'exclude_folders' for account '%s'" % config.get('account_name', 'unknown'))
+        server.logout()
+        return False
+
+    if config.get('folders'):
+        # Handle both string (comma-separated) and already-split list
+        if isinstance(config['folders'], str):
+            dirs = list(map(lambda x: x.strip(), config['folders'].split(',')))
+        else:
+            dirs = config['folders'] if isinstance(config['folders'], list) else [config['folders']]
+
+        if config.get('thunderbird', False):
+            dirs = [i.replace("Inbox", "INBOX", 1) if i.startswith("Inbox") else i for i in dirs]
+        names = list(filter(lambda x: x[0] in dirs, names))
+    elif config.get('exclude-folders'):
+        # Handle both string (comma-separated) and already-split list
+        if isinstance(config['exclude-folders'], str):
+            exclude_folders = list(map(lambda x: x.strip(), config['exclude-folders'].split(',')))
+        else:
+            exclude_folders = config['exclude-folders'] if isinstance(config['exclude-folders'], list) else [config['exclude-folders']]
+
+    # Setup base directory
+    basedir = config.get('basedir', '.')
+    if basedir.startswith('~'):
+        basedir = os.path.expanduser(basedir)
+    else:
+        basedir = os.path.abspath(basedir)
+
+    create_basedir(basedir)
+    create_folder_structure(names, basedir)
+
+    # Import GPG key if specified (for encryption)
+    if config.get('gpg_import_key') and config.get('gpg_encrypt'):
+        print ("\nImporting GPG public key...")
+        import_gpg_key(config['gpg_import_key'])
+
+    # S3 Restore: Download and decrypt files before restore
+    if config.get('restore') and config.get('s3_upload'):
+        print ("\nDownloading files from S3 for restore...")
+
+        try:
+            for foldername, filename in names:
+                if foldername in exclude_folders:
+                    continue
+
+                # Determine the filename to download (might be encrypted)
+                download_filename = filename
+                if config.get('gpg_encrypt'):
+                    download_filename = filename + '.gpg'
+
+                print ("Downloading: %s" % download_filename)
+                try:
+                    # Download from S3
+                    downloaded_file = download_from_s3(download_filename, config, basedir)
+
+                    # Decrypt if needed
+                    if config.get('gpg_encrypt'):
+                        print ("Decrypting: %s" % download_filename)
+                        try:
+                            decrypted_file = decrypt_file_gpg(downloaded_file)
+                            # Remove the encrypted file after decryption
+                            os.remove(downloaded_file)
+                            print ("  Decryption complete")
+                        except Exception as e:
+                            print ("  ERROR: %s" % str(e))
+                            continue
+
+                except Exception as e:
+                    print ("  ERROR: %s" % str(e))
+                    continue
+
+            print ("\nS3 download complete\n")
+
+        except Exception as e:
+            print ("ERROR during S3 download: %s" % str(e))
+
+    # Process each folder
+    for name_pair in names:
+        try:
+            foldername, filename = name_pair
+            # Skip excluded folders
+            if foldername in exclude_folders:
+                print (f'Excluding folder "{foldername}"')
+                continue
+
+            if config.get('restore', False):
+                # RESTORE MODE: Upload messages from mbox files to IMAP server
+                fol_messages = scan_folder(server, foldername, config.get('nospinner', False))
+                fil_messages = scan_file(filename, False, config.get('nospinner', False), basedir)
+
+                # Find messages that are in file but not on server
+                messages_to_upload = {}
+                for msg_id in fil_messages.keys():
+                    if msg_id not in fol_messages:
+                        messages_to_upload[msg_id] = msg_id
+
+                upload_messages(server, foldername, filename, messages_to_upload,
+                              config.get('nospinner', False), basedir)
+            else:
+                # BACKUP MODE: Download messages from IMAP server to mbox files
+                fol_messages = scan_folder(server, foldername, config.get('nospinner', False))
+                fil_messages = scan_file(filename, config.get('overwrite', False),
+                                       config.get('nospinner', False), basedir)
+                new_messages = {}
+                for msg_id in fol_messages.keys():
+                    if msg_id not in fil_messages:
+                        new_messages[msg_id] = fol_messages[msg_id]
+
+                download_messages(server, filename, new_messages, config.get('overwrite', False),
+                                config.get('nospinner', False), config.get('thunderbird', False),
+                                basedir, config.get('icloud', False))
+
+        except SkipFolderException as e:
+            print (e)
+
+    print ("Disconnecting")
+    server.logout()
+
+    # S3 Upload: Process and upload mbox files after backup
+    if config.get('s3_upload') and not config.get('restore'):
+        print ("\nProcessing files for S3 upload...")
+
+        files_to_upload = []
+        temp_files_to_cleanup = []
+
+        try:
+            # Collect all mbox files
+            for foldername, filename in names:
+                if foldername in exclude_folders:
+                    continue
+
+                fullname = os.path.join(basedir, filename)
+                if os.path.exists(fullname):
+                    file_to_upload = fullname
+
+                    # Encrypt if requested
+                    if config.get('gpg_encrypt'):
+                        print ("Encrypting: %s" % filename)
+                        try:
+                            encrypted_file = encrypt_file_gpg(fullname, config['gpg_recipient'])
+                            file_to_upload = encrypted_file
+                            temp_files_to_cleanup.append(encrypted_file)
+                        except Exception as e:
+                            print ("  ERROR: %s" % str(e))
+                            continue
+
+                    files_to_upload.append(file_to_upload)
+
+            # Upload files to S3
+            print ("\nUploading %d file(s) to S3..." % len(files_to_upload))
+            for file_path in files_to_upload:
+                filename = os.path.basename(file_path)
+                print ("Processing: %s" % filename)
+                try:
+                    upload_to_s3(file_path, config)
+                except Exception as e:
+                    print ("  ERROR: %s" % str(e))
+
+            print ("\nS3 upload complete")
+
+        finally:
+            # Clean up temporary encrypted files
+            if temp_files_to_cleanup:
+                print ("Cleaning up temporary files...")
+                for temp_file in temp_files_to_cleanup:
+                    try:
+                        if os.path.exists(temp_file):
+                            os.remove(temp_file)
+                            print ("  Removed: %s" % os.path.basename(temp_file))
+                    except Exception as e:
+                        print ("  WARNING: Could not remove %s: %s" % (temp_file, str(e)))
+
+    return True
+
+
 def main():
     """Main entry point"""
     try:
         config = get_config()
-        if config.get('folders') and config.get('exclude-folders'):
-            print("ERROR: You cannot use both --folders and --exclude-folders at the same time")
-            sys.exit(2)
-        server = connect_and_login(config)
-        names = get_names(server,config['thunderbird'],config['nospinner'])
-        exclude_folders = []
-        if config.get('folders'):
-            dirs = list(map(lambda x: x.strip(), config.get('folders').split(',')))
-            if config['thunderbird']:
-                dirs = [i.replace("Inbox", "INBOX", 1) if i.startswith("Inbox") else i
-                        for i in dirs]
-            names = list(filter(lambda x: x[0] in dirs, names))
-        elif config.get('exclude-folders'):
-            exclude_folders = list(map(lambda x: x.strip(), config.get('exclude-folders').split(',')))
 
-        basedir = config.get('basedir')
-        if basedir.startswith('~'):
-            basedir = os.path.expanduser(basedir)
-        else:
-            basedir = os.path.abspath(config.get('basedir'))
-        
-        create_basedir(basedir)
+        # Check if using config file mode
+        if 'config_file' in config:
+            # CONFIG FILE MODE: Process multiple accounts
+            print ("Using config file: %s" % config['config_file'])
+            print ("")
 
-        # for n, name in enumerate(names): # *DEBUG
-        #   print n, name # *DEBUG
-        create_folder_structure(names,basedir)
+            # Load config file
+            config_data = load_config_file(config['config_file'])
+            global_config = config_data.get('global', {})
+            accounts = config_data.get('accounts', [])
 
-        # Import GPG key if specified (for encryption)
-        if config.get('gpg_import_key') and config.get('gpg_encrypt'):
-            print ("\nImporting GPG public key...")
-            import_gpg_key(config['gpg_import_key'])
+            if not accounts:
+                print ("ERROR: No accounts defined in config file")
+                sys.exit(2)
 
-        # S3 Restore: Download and decrypt files before restore
-        if config.get('restore') and config.get('s3_upload'):
-            print ("\nDownloading files from S3 for restore...")
+            print ("Found %d account(s) to process\n" % len(accounts))
 
-            temp_files_to_cleanup = []
+            # Check if restore mode was specified on command line
+            restore_mode = config.get('restore', False)
 
-            try:
-                for foldername, filename in names:
-                    if foldername in exclude_folders:
-                        continue
+            # Process each account
+            success_count = 0
+            failed_count = 0
 
-                    # Determine the filename to download (might be encrypted)
-                    download_filename = filename
-                    if config.get('gpg_encrypt'):
-                        download_filename = filename + '.gpg'
+            for i, account in enumerate(accounts, 1):
+                account_name = account.get('name', 'unknown')
+                print ("=" * 70)
+                print ("Processing account %d/%d: %s" % (i, len(accounts), account_name))
+                print ("=" * 70)
 
-                    print ("Downloading: %s" % download_filename)
-                    try:
-                        # Download from S3
-                        downloaded_file = download_from_s3(download_filename, config, basedir)
+                # Parse account config
+                account_config = parse_account_config(account, global_config)
 
-                        # Decrypt if needed
-                        if config.get('gpg_encrypt'):
-                            print ("Decrypting: %s" % download_filename)
-                            try:
-                                decrypted_file = decrypt_file_gpg(downloaded_file)
-                                # Remove the encrypted file after decryption
-                                os.remove(downloaded_file)
-                                print ("  Decryption complete")
-                            except Exception as e:
-                                print ("  ERROR: %s" % str(e))
-                                continue
+                # Override restore mode if specified on command line
+                if restore_mode:
+                    account_config['restore'] = True
 
-                    except Exception as e:
-                        print ("  ERROR: %s" % str(e))
-                        continue
+                # Process the account
+                success = process_account(account_config)
 
-                print ("\nS3 download complete\n")
-
-            except Exception as e:
-                print ("ERROR during S3 download: %s" % str(e))
-
-        for name_pair in names:
-            try:
-                foldername, filename = name_pair
-                # Skip excluded folders
-                if foldername in exclude_folders:
-                    print(f'Excluding folder "{foldername}"')
-                    continue
-
-                if config['restore']:
-                    # RESTORE MODE: Upload messages from mbox files to IMAP server
-                    fol_messages = scan_folder(
-                        server, foldername, config['nospinner'])
-                    fil_messages = scan_file(filename, False, config['nospinner'], basedir)
-
-                    # Find messages that are in file but not on server
-                    messages_to_upload = {}
-                    for msg_id in fil_messages.keys():
-                        if msg_id not in fol_messages:
-                            messages_to_upload[msg_id] = msg_id
-
-                    upload_messages(server, foldername, filename, messages_to_upload,
-                                  config['nospinner'], basedir)
+                if success:
+                    success_count += 1
+                    print ("\n✓ Account '%s' completed successfully\n" % account_name)
                 else:
-                    # BACKUP MODE: Download messages from IMAP server to mbox files
-                    fol_messages = scan_folder(
-                        server, foldername, config['nospinner'])
-                    fil_messages = scan_file(filename, config['overwrite'], config['nospinner'], basedir)
-                    new_messages = {}
-                    for msg_id in fol_messages.keys():
-                        if msg_id not in fil_messages:
-                            new_messages[msg_id] = fol_messages[msg_id]
+                    failed_count += 1
+                    print ("\n✗ Account '%s' failed\n" % account_name)
 
-                    # for f in new_messages:
-                    #  print "%s : %s" % (f, new_messages[f])
+            # Summary
+            print ("=" * 70)
+            print ("Summary: %d successful, %d failed (out of %d total)" %
+                   (success_count, failed_count, len(accounts)))
+            print ("=" * 70)
 
-                    download_messages(server, filename, new_messages, config['overwrite'], config['nospinner'], config['thunderbird'], basedir, config['icloud'])
+            if failed_count > 0:
+                sys.exit(1)
 
-            except SkipFolderException as e:
-                print (e)
+        else:
+            # COMMAND LINE MODE: Process single account
+            if config.get('folders') and config.get('exclude-folders'):
+                print("ERROR: You cannot use both --folders and --exclude-folders at the same time")
+                sys.exit(2)
 
-        print ("Disconnecting")
-        server.logout()
+            # Use the existing process_account function
+            success = process_account(config)
 
-        # S3 Upload: Process and upload mbox files after backup
-        if config.get('s3_upload') and not config.get('restore'):
-            print ("\nProcessing files for S3 upload...")
+            if not success:
+                sys.exit(1)
 
-            files_to_upload = []
-            temp_files_to_cleanup = []
-
-            try:
-                # Collect all mbox files
-                for foldername, filename in names:
-                    if foldername in exclude_folders:
-                        continue
-
-                    fullname = os.path.join(basedir, filename)
-                    if os.path.exists(fullname):
-                        file_to_upload = fullname
-
-                        # Encrypt if requested
-                        if config.get('gpg_encrypt'):
-                            print ("Encrypting: %s" % filename)
-                            try:
-                                encrypted_file = encrypt_file_gpg(fullname, config['gpg_recipient'])
-                                file_to_upload = encrypted_file
-                                temp_files_to_cleanup.append(encrypted_file)
-                            except Exception as e:
-                                print ("  ERROR: %s" % str(e))
-                                continue
-
-                        files_to_upload.append(file_to_upload)
-
-                # Upload files to S3
-                print ("\nUploading %d file(s) to S3..." % len(files_to_upload))
-                for file_path in files_to_upload:
-                    filename = os.path.basename(file_path)
-                    print ("Processing: %s" % filename)
-                    try:
-                        upload_to_s3(file_path, config)
-                    except Exception as e:
-                        print ("  ERROR: %s" % str(e))
-
-                print ("\nS3 upload complete")
-
-            finally:
-                # Clean up temporary encrypted files
-                if temp_files_to_cleanup:
-                    print ("Cleaning up temporary files...")
-                    for temp_file in temp_files_to_cleanup:
-                        try:
-                            if os.path.exists(temp_file):
-                                os.remove(temp_file)
-                                print ("  Removed: %s" % os.path.basename(temp_file))
-                        except Exception as e:
-                            print ("  WARNING: Could not remove %s: %s" % (temp_file, str(e)))
     except socket.error as e:
-       
         print ("ERROR:", e)
         sys.exit(4)
     except imaplib.IMAP4.error as e:
