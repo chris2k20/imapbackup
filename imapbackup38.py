@@ -54,6 +54,8 @@ import imaplib
 import socket
 import re
 import hashlib
+import subprocess
+import tempfile
 
 class SkipFolderException(Exception):
     """Indicates aborting processing of current folder, continue with next folder."""
@@ -130,6 +132,80 @@ def string_from_file(value):
 
     with open(os.path.expanduser(value[1:]), 'r') as content:
         return content.read().strip()
+
+
+def encrypt_file_gpg(input_file, recipient):
+    """Encrypt a file using GPG and return the path to encrypted file"""
+    output_file = input_file + '.gpg'
+
+    try:
+        # Run GPG encryption
+        cmd = [
+            'gpg',
+            '--batch',
+            '--yes',
+            '--trust-model', 'always',
+            '--encrypt',
+            '--recipient', recipient,
+            '--output', output_file,
+            input_file
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+
+        if os.path.exists(output_file):
+            print ("  Encrypted with GPG for recipient: %s" % recipient)
+            return output_file
+        else:
+            raise Exception("GPG encryption failed: output file not created")
+
+    except subprocess.CalledProcessError as e:
+        raise Exception("GPG encryption failed: %s\n%s" % (e.stderr, e.stdout))
+    except FileNotFoundError:
+        raise Exception("GPG not found. Please install GPG (gnupg) to use encryption.")
+
+
+def upload_to_s3(file_path, config):
+    """Upload a file to S3-compatible storage using AWS CLI"""
+    try:
+        # Check if aws CLI is available
+        try:
+            subprocess.run(['aws', '--version'], capture_output=True, check=True)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            raise Exception("AWS CLI not found. Please install awscli to use S3 upload.")
+
+        # Prepare S3 object key
+        filename = os.path.basename(file_path)
+        s3_prefix = config.get('s3_prefix', '').rstrip('/')
+        if s3_prefix:
+            s3_key = s3_prefix + '/' + filename
+        else:
+            s3_key = filename
+
+        s3_uri = 's3://%s/%s' % (config['s3_bucket'], s3_key)
+
+        # Set up environment variables for AWS credentials
+        env = os.environ.copy()
+        env['AWS_ACCESS_KEY_ID'] = config['s3_access_key']
+        env['AWS_SECRET_ACCESS_KEY'] = config['s3_secret_key']
+
+        # Build AWS CLI command
+        cmd = [
+            'aws', 's3', 'cp',
+            file_path,
+            s3_uri,
+            '--endpoint-url', config['s3_endpoint']
+        ]
+
+        print ("  Uploading to S3: %s" % s3_uri)
+
+        result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=True)
+
+        print ("  Upload complete")
+        return True
+
+    except subprocess.CalledProcessError as e:
+        raise Exception("S3 upload failed: %s\n%s" % (e.stderr, e.stdout))
 
 
 def upload_messages(server, foldername, filename, messages_to_upload, nospinner, basedir):
@@ -498,6 +574,16 @@ def print_usage():
     print (" --thunderbird                 Create Mozilla Thunderbird compatible mailbox")
     print (" --nospinner                   Disable spinner (makes output log-friendly)")
     print (" --icloud                      Enable iCloud compatibility mode (for iCloud mailserver)")
+    print ("")
+    print ("S3 Upload Options:")
+    print (" --s3-upload                   Upload mbox files to S3-compatible storage after backup")
+    print (" --s3-endpoint=URL             S3 endpoint URL (e.g., https://s3.eu-central-1.wasabisys.com)")
+    print (" --s3-bucket=BUCKET            S3 bucket name")
+    print (" --s3-access-key=KEY           S3 access key ID")
+    print (" --s3-secret-key=KEY           S3 secret access key")
+    print (" --s3-prefix=PREFIX            Optional prefix for S3 object keys (e.g., backups/imap/)")
+    print (" --gpg-encrypt                 Encrypt files with GPG before uploading to S3")
+    print (" --gpg-recipient=EMAIL         GPG recipient email/key ID for encryption")
     sys.exit(2)
 
 
@@ -508,7 +594,9 @@ def process_cline():
         short_args = "ayrnekt:c:s:u:p:f:d:"
         long_args = ["append-to-mboxes", "yes-overwrite-mboxes", "restore",
                      "ssl", "timeout", "keyfile=", "certfile=", "server=", "user=", "pass=",
-                     "folders=", "exclude-folders=", "thunderbird", "nospinner", "mbox-dir=", "icloud"]
+                     "folders=", "exclude-folders=", "thunderbird", "nospinner", "mbox-dir=", "icloud",
+                     "s3-upload", "s3-endpoint=", "s3-bucket=", "s3-access-key=", "s3-secret-key=",
+                     "s3-prefix=", "gpg-encrypt", "gpg-recipient="]
         opts, extraargs = getopt.getopt(sys.argv[1:], short_args, long_args)
     except getopt.GetoptError:
         print_usage()
@@ -516,7 +604,8 @@ def process_cline():
     warnings = []
     config = {'overwrite': False, 'usessl': False,
               'thunderbird': False, 'nospinner': False,
-              'basedir': ".", 'icloud': False, 'restore': False}
+              'basedir': ".", 'icloud': False, 'restore': False,
+              's3_upload': False, 'gpg_encrypt': False}
     errors = []
 
     # empty command line
@@ -561,6 +650,22 @@ def process_cline():
             config['nospinner'] = True
         elif option == "--icloud":
             config['icloud'] = True
+        elif option == "--s3-upload":
+            config['s3_upload'] = True
+        elif option == "--s3-endpoint":
+            config['s3_endpoint'] = value
+        elif option == "--s3-bucket":
+            config['s3_bucket'] = value
+        elif option == "--s3-access-key":
+            config['s3_access_key'] = value
+        elif option == "--s3-secret-key":
+            config['s3_secret_key'] = value
+        elif option == "--s3-prefix":
+            config['s3_prefix'] = value
+        elif option == "--gpg-encrypt":
+            config['gpg_encrypt'] = True
+        elif option == "--gpg-recipient":
+            config['gpg_recipient'] = value
         else:
             errors.append("Unknown option: " + option)
 
@@ -585,6 +690,24 @@ def check_config(config, warnings, errors):
     if 'certfilename' in config and not config['usessl']:
         errors.append(
             "Certificate specified without SSL.  Please use -e or --ssl.")
+
+    # Check S3 configuration
+    if config.get('s3_upload'):
+        if 's3_endpoint' not in config:
+            errors.append("S3 upload enabled but no --s3-endpoint specified.")
+        if 's3_bucket' not in config:
+            errors.append("S3 upload enabled but no --s3-bucket specified.")
+        if 's3_access_key' not in config:
+            errors.append("S3 upload enabled but no --s3-access-key specified.")
+        if 's3_secret_key' not in config:
+            errors.append("S3 upload enabled but no --s3-secret-key specified.")
+
+    # Check GPG configuration
+    if config.get('gpg_encrypt'):
+        if not config.get('s3_upload'):
+            warnings.append("GPG encryption enabled but S3 upload is not enabled.")
+        if 'gpg_recipient' not in config:
+            errors.append("GPG encryption enabled but no --gpg-recipient specified.")
     if 'server' in config and ':' in config['server']:
         # get host and port strings
         bits = config['server'].split(':', 1)
@@ -803,6 +926,60 @@ def main():
 
         print ("Disconnecting")
         server.logout()
+
+        # S3 Upload: Process and upload mbox files after backup
+        if config.get('s3_upload') and not config.get('restore'):
+            print ("\nProcessing files for S3 upload...")
+
+            files_to_upload = []
+            temp_files_to_cleanup = []
+
+            try:
+                # Collect all mbox files
+                for foldername, filename in names:
+                    if foldername in exclude_folders:
+                        continue
+
+                    fullname = os.path.join(basedir, filename)
+                    if os.path.exists(fullname):
+                        file_to_upload = fullname
+
+                        # Encrypt if requested
+                        if config.get('gpg_encrypt'):
+                            print ("Encrypting: %s" % filename)
+                            try:
+                                encrypted_file = encrypt_file_gpg(fullname, config['gpg_recipient'])
+                                file_to_upload = encrypted_file
+                                temp_files_to_cleanup.append(encrypted_file)
+                            except Exception as e:
+                                print ("  ERROR: %s" % str(e))
+                                continue
+
+                        files_to_upload.append(file_to_upload)
+
+                # Upload files to S3
+                print ("\nUploading %d file(s) to S3..." % len(files_to_upload))
+                for file_path in files_to_upload:
+                    filename = os.path.basename(file_path)
+                    print ("Processing: %s" % filename)
+                    try:
+                        upload_to_s3(file_path, config)
+                    except Exception as e:
+                        print ("  ERROR: %s" % str(e))
+
+                print ("\nS3 upload complete")
+
+            finally:
+                # Clean up temporary encrypted files
+                if temp_files_to_cleanup:
+                    print ("Cleaning up temporary files...")
+                    for temp_file in temp_files_to_cleanup:
+                        try:
+                            if os.path.exists(temp_file):
+                                os.remove(temp_file)
+                                print ("  Removed: %s" % os.path.basename(temp_file))
+                        except Exception as e:
+                            print ("  WARNING: Could not remove %s: %s" % (temp_file, str(e)))
     except socket.error as e:
        
         print ("ERROR:", e)
