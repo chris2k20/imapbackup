@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.1](https://github.com/chris2k20/imapbackup/compare/v1.1.0...v1.1.1) (2025-10-10)
+
+
+### Bug Fixes
+
+* abort backup when GPG key import fails to prevent unencrypted data exposure ([87bf75b](https://github.com/chris2k20/imapbackup/commit/87bf75b944a56b6d730a5ab649dd41074232d9ef))
+* **Dockerfile:** add curl package to Docker image dependencies ([49b6343](https://github.com/chris2k20/imapbackup/commit/49b6343fa20d4545050028f472632e0f08c034ea))
+
 ## [1.1.0](https://github.com/chris2k20/imapbackup/compare/v1.0.0...v1.1.0) (2025-10-10)
 
 
