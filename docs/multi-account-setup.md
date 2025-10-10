@@ -509,13 +509,30 @@ python3 imapbackup.py --config=/path/to/my-config.yaml
 
 ### Restore Mode
 
+Restore all accounts defined in your config file to their respective IMAP servers:
+
 ```bash
-# Restore all accounts from config
+# Restore with auto-detected config
 python3 imapbackup.py --restore
 
 # Or explicitly specify config file
 python3 imapbackup.py --config=config.yaml --restore
 ```
+
+**How restore works:**
+1. Reads the config file to get all account settings
+2. For each account:
+   - Connects to the IMAP server
+   - Downloads from S3 if enabled (and decrypts if GPG is enabled)
+   - Compares local mbox files with server folders
+   - Uploads only messages that don't already exist on the server
+3. Skips duplicate messages automatically
+
+**Use cases:**
+- **Email server migration**: Backup from old server, restore to new server
+- **Disaster recovery**: Restore from S3 backups to a new mail server
+- **Account migration**: Move emails between different email providers
+- **Testing**: Restore backups to a test IMAP server
 
 ### Docker
 
