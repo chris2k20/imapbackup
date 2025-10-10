@@ -1,3 +1,10 @@
+---
+layout: default
+title: Docker Setup Guide - IMAP Backup Tool
+description: Learn how to use Docker for IMAP email backups. Complete guide with examples for Docker Compose, Kubernetes, and automated backups with cron.
+keywords: docker imap backup, email backup docker, docker compose backup, kubernetes email backup, automated docker backup
+---
+
 # Docker Setup Guide
 
 This guide explains how to use the `user2k20/imapbackup` Docker image for backing up and restoring your IMAP emails.

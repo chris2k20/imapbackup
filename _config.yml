@@ -1,0 +1,103 @@
+# GitHub Pages Configuration for IMAP Backup Tool
+# SEO Optimized Configuration
+
+# Site Settings
+title: "IMAP Backup & Restore Tool"
+description: "Open-source Python tool for backing up and restoring IMAP email accounts with S3 storage and GPG encryption support. Docker-ready with zero dependencies."
+author: "chris2k20"
+email: "noreply@github.com"
+
+# SEO and Social
+tagline: "Secure IMAP Email Backup with S3 & GPG Encryption"
+keywords: "imap backup, email backup, python imap, s3 backup, gpg encryption, docker backup, email migration, imap restore, mailbox backup, mbox backup"
+
+# Repository Info
+url: "https://chris2k20.github.io"
+baseurl: "/imapbackup"
+repository: "chris2k20/imapbackup"
+
+# GitHub Metadata
+github_username: chris2k20
+show_downloads: true
+
+# Theme
+theme: jekyll-theme-cayman
+# Alternative themes: jekyll-theme-minimal, jekyll-theme-architect, jekyll-theme-slate
+
+# SEO Plugin Settings
+plugins:
+  - jekyll-seo-tag
+  - jekyll-sitemap
+  - jekyll-feed
+
+# Google Analytics (optional - add your tracking ID)
+# google_analytics: UA-XXXXXXXXX-X
+
+# Social Links (for SEO)
+social:
+  name: IMAP Backup Tool
+  links:
+    - https://github.com/chris2k20/imapbackup
+    - https://hub.docker.com/r/user2k20/imapbackup
+
+# Twitter Card (optional)
+# twitter:
+#   username: yourusername
+#   card: summary_large_image
+
+# Build Settings
+markdown: kramdown
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+
+# Files to Include/Exclude
+include:
+  - docs
+  - README.md
+  - LICENSE
+
+exclude:
+  - vendor
+  - Gemfile
+  - Gemfile.lock
+  - imapbackup.py
+  - requirements.txt
+  - Dockerfile
+  - .dockerignore
+  - .git
+  - .gitignore
+  - test_*
+  - "*.pyc"
+  - __pycache__
+
+# Navigation (optional - for themes that support it)
+header_pages:
+  - docs/docker-setup.md
+  - docs/backup-guide.md
+  - docs/restore-guide.md
+  - docs/s3-setup.md
+  - docs/gpg-setup.md
+  - docs/gpg-key-import.md
+
+# Defaults for Front Matter
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
+      image: /assets/images/og-image.png
+  - scope:
+      path: "docs"
+    values:
+      layout: default
+      nav_order: 1
+
+# Permalink Style
+permalink: pretty
+
+# Language
+lang: en-US
+
+# Logo (optional - place in assets/images/)
+logo: /assets/images/logo.png

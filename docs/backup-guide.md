@@ -1,3 +1,10 @@
+---
+layout: default
+title: Email Backup Guide - IMAP Backup Strategies
+description: Complete guide for backing up IMAP emails with incremental backups, S3 cloud storage, GPG encryption, and automated scheduling. Includes examples for all major email providers.
+keywords: email backup guide, imap backup strategies, incremental email backup, encrypted email backup, automated backup, gmail backup, office365 backup
+---
+
 # Backup Guide
 
 Complete guide for backing up your IMAP emails using the imapbackup tool.

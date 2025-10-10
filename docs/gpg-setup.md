@@ -1,3 +1,10 @@
+---
+layout: default
+title: GPG Encryption Setup Guide - Secure Email Backups
+description: Complete guide for setting up GPG encryption for secure IMAP email backups. Learn how to create keys, encrypt backups, and manage GPG in Docker.
+keywords: gpg encryption, email encryption, pgp backup, encrypted email backup, gpg docker, openpgp backup, secure email storage
+---
+
 # GPG Encryption Setup Guide
 
 Complete guide for setting up GPG encryption for secure email backups.

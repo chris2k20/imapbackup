@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
+
+  <!-- Homepage -->
+  <url>
+    <loc>https://chris2k20.github.io/imapbackup/</loc>
+    <lastmod>2025-01-10</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>1.0</priority>
+  </url>
+
+  <!-- Main Documentation -->
+  <url>
+    <loc>https://chris2k20.github.io/imapbackup/docs/README.html</loc>
+    <lastmod>2025-01-10</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.9</priority>
+  </url>
+
+  <!-- Docker Setup Guide -->
+  <url>
+    <loc>https://chris2k20.github.io/imapbackup/docs/docker-setup.html</loc>
+    <lastmod>2025-01-10</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+
+  <!-- Python Setup Guide -->
+  <url>
+    <loc>https://chris2k20.github.io/imapbackup/docs/python-setup.html</loc>
+    <lastmod>2025-01-10</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+
+  <!-- Backup Guide -->
+  <url>
+    <loc>https://chris2k20.github.io/imapbackup/docs/backup-guide.html</loc>
+    <lastmod>2025-01-10</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.9</priority>
+  </url>
+
+  <!-- Restore Guide -->
+  <url>
+    <loc>https://chris2k20.github.io/imapbackup/docs/restore-guide.html</loc>
+    <lastmod>2025-01-10</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+
+  <!-- S3 Setup Guide -->
+  <url>
+    <loc>https://chris2k20.github.io/imapbackup/docs/s3-setup.html</loc>
+    <lastmod>2025-01-10</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+  </url>
+
+  <!-- GPG Setup Guide -->
+  <url>
+    <loc>https://chris2k20.github.io/imapbackup/docs/gpg-setup.html</loc>
+    <lastmod>2025-01-10</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+  </url>
+
+  <!-- GPG Key Import Guide -->
+  <url>
+    <loc>https://chris2k20.github.io/imapbackup/docs/gpg-key-import.html</loc>
+    <lastmod>2025-01-10</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+  </url>
+
+</urlset>

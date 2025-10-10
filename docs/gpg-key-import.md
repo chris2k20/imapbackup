@@ -1,3 +1,10 @@
+---
+layout: default
+title: GPG Key Import Guide - Flexible Public Key Management
+description: Learn how to import GPG public keys from files, URLs, and environment variables for Docker and Kubernetes email backups. No keyring mounting needed.
+keywords: gpg key import, docker gpg, kubernetes gpg, environment variable gpg, gpg automation, flexible key management, gpg docker encryption
+---
+
 # GPG Public Key Import - Flexible Options
 
 The IMAP backup tool now supports importing GPG public keys from multiple sources, making it easier to use encryption without manually managing GPG keyrings.

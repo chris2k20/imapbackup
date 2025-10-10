@@ -1,3 +1,10 @@
+---
+layout: default
+title: Documentation - IMAP Backup & Restore Tool
+description: Complete documentation for IMAP email backup and restore. Learn how to use Docker, Python, S3 storage, and GPG encryption for secure email backups.
+keywords: imap backup documentation, email backup guide, docker backup tutorial, s3 email storage, gpg encryption guide
+---
+
 # IMAP Backup & Restore Documentation
 
 Welcome to the IMAP Backup & Restore tool documentation. This tool allows you to backup, restore, and manage your IMAP email accounts with support for S3 storage and GPG encryption.
