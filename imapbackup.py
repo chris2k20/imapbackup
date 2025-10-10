@@ -242,7 +242,7 @@ def import_gpg_key(source):
         source: String containing env var name, file path, URL, or key content
 
     Returns:
-        True if import succeeded, False otherwise
+        Fingerprint string if import succeeded, None otherwise
     """
     try:
         key_content = None
@@ -334,19 +334,55 @@ def import_gpg_key(source):
             temp_key_file = f.name
 
         try:
+            # First, extract fingerprint using show-only
+            fingerprint = None
+            try:
+                show_cmd = ['gpg', '--batch', '--import-options', 'show-only', '--import', '--with-colons', temp_key_file]
+                show_result = subprocess.run(show_cmd, capture_output=True, text=True, check=True)
+                for line in show_result.stdout.split('\n'):
+                    if line.startswith('fpr:'):
+                        fields = line.split(':')
+                        if len(fields) >= 10 and len(fields[9]) == 40:
+                            fingerprint = fields[9]
+                            print("  Extracted fingerprint: %s" % fingerprint)
+                            break
+            except:
+                pass  # Will try after import
+
+            # Import the key
             cmd = ['gpg', '--batch', '--import', temp_key_file]
             result = subprocess.run(cmd, capture_output=True, text=True, check=True)
 
+            # Check if key was skipped due to missing user ID
+            if 'contains no user ID' in result.stderr or 'w/o user IDs' in result.stderr:
+                print("\nERROR: GPG key import failed - key has no user ID")
+                print("ERROR: The key from '%s' does not contain a user ID." % source_description)
+                print("ERROR: This typically happens with keys from keys.openpgp.org when the email isn't verified.")
+                print("ERROR:")
+                print("ERROR: Solutions:")
+                print("ERROR: 1. Verify your email on keys.openpgp.org and use the by-email URL")
+                print("ERROR: 2. Provide the full PGP public key block directly (with user ID)")
+                print("ERROR: 3. Upload your key to keyserver.ubuntu.com with full user ID")
+                return None
+
             print("  Successfully imported GPG key from %s" % source_description)
 
-            # Show imported key info if available in stderr
-            if result.stderr:
-                # GPG outputs import info to stderr
-                for line in result.stderr.split('\n'):
-                    if 'imported:' in line.lower() or 'public key' in line.lower():
-                        print("  %s" % line.strip())
+            # If fingerprint extraction failed before import, try after
+            if not fingerprint:
+                try:
+                    list_cmd = ['gpg', '--batch', '--list-keys', '--with-colons']
+                    list_result = subprocess.run(list_cmd, capture_output=True, text=True, check=True)
+                    for line in list_result.stdout.split('\n'):
+                        if line.startswith('fpr:'):
+                            fields = line.split(':')
+                            if len(fields) >= 10 and len(fields[9]) == 40:
+                                fingerprint = fields[9]
+                                break
+                except:
+                    pass
 
-            return True
+            # Return fingerprint if found, otherwise True for backwards compatibility
+            return fingerprint if fingerprint else True
 
         finally:
             # Clean up temp file
@@ -355,7 +391,7 @@ def import_gpg_key(source):
 
     except Exception as e:
         print("  WARNING: Failed to import GPG key: %s" % str(e))
-        return False
+        return None
 
 
 def encrypt_file_gpg(input_file, recipient):
@@ -1886,13 +1922,18 @@ def process_account(config):
     # Import GPG key if specified (for encryption)
     if config.get('gpg_import_key') and config.get('gpg_encrypt'):
         print ("\nImporting GPG public key...")
-        key_imported = import_gpg_key(config['gpg_import_key'])
-        if not key_imported:
+        key_result = import_gpg_key(config['gpg_import_key'])
+        if not key_result:
             print ("\nERROR: Failed to import GPG key for account '%s'" % config.get('account_name', 'unknown'))
             print ("ERROR: Cannot proceed with GPG encryption enabled but key import failed")
             print ("ERROR: Aborting backup to prevent unencrypted data from being created")
             server.logout()
             return False
+
+        # If import returned a fingerprint, use it instead of the configured recipient
+        if isinstance(key_result, str) and len(key_result) >= 16:
+            print ("  Using imported key fingerprint for encryption: %s" % key_result)
+            config['gpg_recipient'] = key_result
 
     # S3 Restore: Download and decrypt files before restore
     if config.get('restore') and config.get('s3_upload'):
