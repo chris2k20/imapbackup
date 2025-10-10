@@ -134,6 +134,126 @@ def string_from_file(value):
         return content.read().strip()
 
 
+def import_gpg_key(source):
+    """
+    Import a GPG public key from various sources.
+
+    Supports:
+    - Environment variable: GPG_PUBLIC_KEY
+    - File path: /path/to/key.asc or ~/keys/public.asc
+    - URL: https://example.com/public-key.asc
+    - Raw key content as string
+
+    Args:
+        source: String containing env var name, file path, URL, or key content
+
+    Returns:
+        True if import succeeded, False otherwise
+    """
+    try:
+        key_content = None
+        source_description = ""
+
+        # Check if GPG is available
+        try:
+            subprocess.run(['gpg', '--version'], capture_output=True, check=True)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            raise Exception("GPG not found. Please install GPG (gnupg) to use key import.")
+
+        # 1. Check environment variable
+        if source.startswith('env:') or source.startswith('ENV:'):
+            env_var = source[4:]
+            key_content = os.environ.get(env_var)
+            if not key_content:
+                raise Exception("Environment variable '%s' not found or empty" % env_var)
+            source_description = "environment variable %s" % env_var
+
+        # 2. Check if it's a URL (http:// or https://)
+        elif source.startswith('http://') or source.startswith('https://'):
+            try:
+                # Use subprocess to call curl or wget
+                # Try curl first
+                try:
+                    result = subprocess.run(
+                        ['curl', '-fsSL', source],
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                        timeout=30
+                    )
+                    key_content = result.stdout
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    # Fall back to wget
+                    result = subprocess.run(
+                        ['wget', '-qO-', source],
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                        timeout=30
+                    )
+                    key_content = result.stdout
+
+                if not key_content or len(key_content) < 100:
+                    raise Exception("Downloaded key appears to be empty or invalid")
+                source_description = "URL %s" % source
+            except subprocess.TimeoutExpired:
+                raise Exception("Timeout while downloading key from %s" % source)
+            except Exception as e:
+                raise Exception("Failed to download key from URL: %s" % str(e))
+
+        # 3. Check if it's a file path
+        elif os.path.exists(os.path.expanduser(source)):
+            file_path = os.path.expanduser(source)
+            with open(file_path, 'r') as f:
+                key_content = f.read()
+            source_description = "file %s" % file_path
+
+        # 4. Assume it's raw key content
+        else:
+            # Check if it looks like a GPG key
+            if '-----BEGIN PGP PUBLIC KEY BLOCK-----' in source:
+                key_content = source
+                source_description = "provided key content"
+            else:
+                raise Exception("Invalid key source: not a valid file, URL, environment variable, or key content")
+
+        # Validate key content
+        if not key_content:
+            raise Exception("No key content found")
+
+        if '-----BEGIN PGP PUBLIC KEY BLOCK-----' not in key_content:
+            raise Exception("Invalid GPG key format (missing PGP PUBLIC KEY BLOCK header)")
+
+        # Import the key using GPG
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.asc') as f:
+            f.write(key_content)
+            temp_key_file = f.name
+
+        try:
+            cmd = ['gpg', '--batch', '--import', temp_key_file]
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+
+            print("  Successfully imported GPG key from %s" % source_description)
+
+            # Show imported key info if available in stderr
+            if result.stderr:
+                # GPG outputs import info to stderr
+                for line in result.stderr.split('\n'):
+                    if 'imported:' in line.lower() or 'public key' in line.lower():
+                        print("  %s" % line.strip())
+
+            return True
+
+        finally:
+            # Clean up temp file
+            if os.path.exists(temp_key_file):
+                os.unlink(temp_key_file)
+
+    except Exception as e:
+        print("  WARNING: Failed to import GPG key: %s" % str(e))
+        return False
+
+
 def encrypt_file_gpg(input_file, recipient):
     """Encrypt a file using GPG and return the path to encrypted file"""
     output_file = input_file + '.gpg'
@@ -666,6 +786,10 @@ def print_usage():
     print ("                               Backup mode: Encrypts before upload")
     print ("                               Restore mode: Decrypts after download")
     print (" --gpg-recipient=EMAIL         GPG recipient email/key ID (required for encryption)")
+    print (" --gpg-import-key=SOURCE       Import GPG public key before encryption. SOURCE can be:")
+    print ("                               - File path: /path/to/key.asc or ~/keys/public.asc")
+    print ("                               - URL: https://example.com/public-key.asc")
+    print ("                               - Environment variable: env:GPG_PUBLIC_KEY")
     sys.exit(2)
 
 
@@ -678,7 +802,7 @@ def process_cline():
                      "ssl", "timeout", "keyfile=", "certfile=", "server=", "user=", "pass=",
                      "folders=", "exclude-folders=", "thunderbird", "nospinner", "mbox-dir=", "icloud",
                      "s3-upload", "s3-endpoint=", "s3-bucket=", "s3-access-key=", "s3-secret-key=",
-                     "s3-prefix=", "gpg-encrypt", "gpg-recipient="]
+                     "s3-prefix=", "gpg-encrypt", "gpg-recipient=", "gpg-import-key="]
         opts, extraargs = getopt.getopt(sys.argv[1:], short_args, long_args)
     except getopt.GetoptError:
         print_usage()
@@ -748,6 +872,8 @@ def process_cline():
             config['gpg_encrypt'] = True
         elif option == "--gpg-recipient":
             config['gpg_recipient'] = value
+        elif option == "--gpg-import-key":
+            config['gpg_import_key'] = value
         else:
             errors.append("Unknown option: " + option)
 
@@ -965,6 +1091,11 @@ def main():
         # for n, name in enumerate(names): # *DEBUG
         #   print n, name # *DEBUG
         create_folder_structure(names,basedir)
+
+        # Import GPG key if specified (for encryption)
+        if config.get('gpg_import_key') and config.get('gpg_encrypt'):
+            print ("\nImporting GPG public key...")
+            import_gpg_key(config['gpg_import_key'])
 
         # S3 Restore: Download and decrypt files before restore
         if config.get('restore') and config.get('s3_upload'):
