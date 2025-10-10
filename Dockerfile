@@ -17,7 +17,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # - ca-certificates: sane TLS defaults
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       tini gnupg ca-certificates \
+       tini gnupg ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies from requirements.txt (includes awscli)
