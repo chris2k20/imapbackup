@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.1.0](https://github.com/chris2k20/imapbackup/compare/v1.0.0...v1.1.0) (2025-10-10)
+
+
+### Features
+
+* add network retry logic for IMAP operations and S3 transfers ([380641f](https://github.com/chris2k20/imapbackup/commit/380641f771f27291ebd3dcf7417f741b8c958a87))
+* add progress tracking and memory optimization for large mailbox processing ([1254123](https://github.com/chris2k20/imapbackup/commit/1254123d410dfc81db8addd564703f14584e630c))
+
+
+### Bug Fixes
+
+* **Dockerfile:** run script via python3 to avoid shebang env -S compatibility issues ([ff506d2](https://github.com/chris2k20/imapbackup/commit/ff506d248ada0b2cbf1d3e566f4d92f050e07362))
+
 ## 1.0.0 (2025-10-10)
 
 
