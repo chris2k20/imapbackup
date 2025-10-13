@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/chris2k20/imapbackup/compare/v1.3.0...v1.4.0) (2025-10-13)
+
+
+### Features
+
+* enhance GPG key import to return fingerprint and handle missing user IDs ([7370dc9](https://github.com/chris2k20/imapbackup/commit/7370dc99d96643fc28d6683cd3fa08cf4ba488d9))
+
 ## [1.3.0](https://github.com/chris2k20/imapbackup/compare/v1.2.0...v1.3.0) (2025-10-10)
 
 
