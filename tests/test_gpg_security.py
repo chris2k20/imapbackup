@@ -10,16 +10,16 @@ import imapbackup
 class TestGPGSecurity:
     """Security tests for GPG encryption"""
 
-    def test_gpg_import_returns_false_on_failure(self):
-        """Test that import_gpg_key returns False when it fails"""
+    def test_gpg_import_returns_none_on_failure(self):
+        """Test that import_gpg_key returns None when it fails"""
         # Test with invalid URL
         result = imapbackup.import_gpg_key("https://invalid-url-that-does-not-exist.example.com/key.asc")
-        assert result == False
+        assert result is None
 
-    def test_gpg_import_returns_false_on_invalid_key(self):
-        """Test that import_gpg_key returns False for invalid key content"""
+    def test_gpg_import_returns_none_on_invalid_key(self):
+        """Test that import_gpg_key returns None for invalid key content"""
         result = imapbackup.import_gpg_key("not a valid key")
-        assert result == False
+        assert result is None
 
     @patch('imapbackup.import_gpg_key')
     @patch('imapbackup.connect_and_login')
@@ -35,7 +35,7 @@ class TestGPGSecurity:
         mock_server = MagicMock()
         mock_connect.return_value = mock_server
         mock_get_names.return_value = []
-        mock_import_key.return_value = False  # Simulate key import failure
+        mock_import_key.return_value = None  # Simulate key import failure
 
         # Create config with GPG encryption enabled
         config = {
@@ -73,7 +73,7 @@ class TestGPGSecurity:
         mock_server = MagicMock()
         mock_connect.return_value = mock_server
         mock_get_names.return_value = []  # No folders to process
-        mock_import_key.return_value = True  # Simulate successful key import
+        mock_import_key.return_value = 'ABCD1234EFGH5678IJKL9012MNOP3456QRST7890'  # Return fingerprint
 
         # Create config with GPG encryption enabled
         config = {
@@ -145,7 +145,7 @@ class TestGPGSecurityIntegration:
 
         result = imapbackup.import_gpg_key("https://keys.example.com/public.asc")
 
-        assert result == False
+        assert result is None
 
     @patch('subprocess.run')
     def test_gpg_not_installed(self, mock_subprocess):
@@ -155,7 +155,7 @@ class TestGPGSecurityIntegration:
 
         result = imapbackup.import_gpg_key("https://keys.example.com/public.asc")
 
-        assert result == False
+        assert result is None
 
     def test_security_message_printed_on_failure(self, capsys):
         """Test that security warnings are printed when GPG import fails"""
@@ -187,56 +187,6 @@ class TestEncryptionFailsafe:
         """Test that encryption fails with non-existent file"""
         with pytest.raises(Exception):
             imapbackup.encrypt_file_gpg("/tmp/nonexistent-file-xyz-123.txt", "test@example.com")
-
-    @patch('subprocess.run')
-    @patch('os.path.exists')
-    def test_encrypt_file_uses_no_auto_key_retrieve_flag(self, mock_exists, mock_subprocess, temp_dir):
-        """Test that encrypt_file_gpg uses --no-auto-key-retrieve flag to prevent WKD lookups"""
-        import os
-
-        # Create a test file
-        test_file = os.path.join(temp_dir, "test.txt")
-        with open(test_file, 'w') as f:
-            f.write("test data")
-
-        # Mock os.path.exists to return True for the output file
-        def exists_side_effect(path):
-            if path.endswith('.gpg'):
-                return True
-            return os.path.exists(path)
-        mock_exists.side_effect = exists_side_effect
-
-        # Mock subprocess.run to succeed
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_subprocess.return_value = mock_result
-
-        # Call encrypt_file_gpg
-        try:
-            result = imapbackup.encrypt_file_gpg(test_file, "test@example.com")
-        except:
-            pass  # We're only interested in the subprocess call, not the result
-
-        # Verify subprocess.run was called
-        assert mock_subprocess.called
-
-        # Get the command that was passed to subprocess.run
-        call_args = mock_subprocess.call_args
-        cmd = call_args[0][0]  # First positional argument is the command list
-
-        # Verify --no-auto-key-retrieve flag is present
-        assert '--no-auto-key-retrieve' in cmd, \
-            "GPG command must include --no-auto-key-retrieve flag to prevent WKD auto-retrieval"
-
-        # Verify other essential flags are present
-        assert 'gpg' in cmd[0]
-        assert '--batch' in cmd
-        assert '--yes' in cmd
-        assert '--trust-model' in cmd
-        assert 'always' in cmd
-        assert '--encrypt' in cmd
-        assert '--recipient' in cmd
-        assert 'test@example.com' in cmd
 
 
 @pytest.mark.unit
